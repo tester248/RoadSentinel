@@ -13,13 +13,31 @@ logger = logging.getLogger(__name__)
 class RiskScorer:
     """Calculate risk scores for road segments."""
     
-    def __init__(self):
-        """Initialize risk scorer with configured weights."""
-        self.alpha = RISK_WEIGHTS['alpha']      # Traffic anomaly weight
-        self.beta = RISK_WEIGHTS['beta']        # Weather risk weight
-        self.gamma = RISK_WEIGHTS['gamma']      # Infrastructure risk weight
-        self.delta = RISK_WEIGHTS.get('delta', 0.15)  # POI risk weight
-        self.epsilon = RISK_WEIGHTS.get('epsilon', 0.20)  # Incident risk weight
+    def __init__(self, use_google_maps=False):
+        """Initialize risk scorer with configured weights.
+        
+        Args:
+            use_google_maps: If True, use 6-component model (adds speeding risk)
+                           If False, use 5-component model (OSM only)
+        """
+        self.use_google_maps = use_google_maps
+        
+        if use_google_maps:
+            # 6-component model (with Google Maps speeding risk)
+            self.alpha = 0.20      # Traffic anomaly weight (reduced from 0.25)
+            self.beta = 0.20       # Weather risk weight (reduced from 0.25)
+            self.gamma = 0.15      # Infrastructure risk weight
+            self.delta = 0.15      # POI risk weight
+            self.epsilon = 0.15    # Incident risk weight (reduced from 0.20)
+            self.zeta = 0.15       # Speeding risk weight (NEW!)
+        else:
+            # 5-component model (original OSM-based)
+            self.alpha = RISK_WEIGHTS['alpha']      # Traffic anomaly weight (0.25)
+            self.beta = RISK_WEIGHTS['beta']        # Weather risk weight (0.25)
+            self.gamma = RISK_WEIGHTS['gamma']      # Infrastructure risk weight (0.15)
+            self.delta = RISK_WEIGHTS.get('delta', 0.15)  # POI risk weight
+            self.epsilon = RISK_WEIGHTS.get('epsilon', 0.20)  # Incident risk weight
+            self.zeta = 0.0        # Speeding risk disabled
     
     def calculate_traffic_anomaly(self, traffic_data: Dict) -> Tuple[float, Dict]:
         """
@@ -406,11 +424,13 @@ class RiskScorer:
                             weather_data: Dict,
                             osm_features: Dict,
                             poi_data: Dict = None,
-                            incident_data: Dict = None) -> Dict:
+                            incident_data: Dict = None,
+                            speeding_data: Dict = None) -> Dict:
         """
         Calculate composite risk score for a location.
         
-        Formula: Risk = α·T_anomaly + β·W_risk + γ·F_risk + δ·POI_risk + ε·Incident_risk
+        Formula (5 components): Risk = α·T + β·W + γ·I + δ·P + ε·Inc
+        Formula (6 components): Risk = α·T + β·W + γ·I + δ·P + ε·Inc + ζ·S
         
         Args:
             location: (lat, lon)
@@ -419,6 +439,7 @@ class RiskScorer:
             osm_features: OSM infrastructure features
             poi_data: POI data (optional)
             incident_data: TomTom incident data (optional)
+            speeding_data: Google Maps speeding risk data (optional, requires use_google_maps=True)
             
         Returns:
             Dictionary with risk score (0-100) and component details
@@ -443,13 +464,22 @@ class RiskScorer:
             i_risk = 0.0
             incident_details = {'incident_count': 0, 'factors': [], 'incident_risk_score': 0.0}
         
+        # Calculate speeding risk if data provided (Google Maps only)
+        if speeding_data and self.use_google_maps:
+            s_risk = speeding_data.get('speeding_risk_score', 0.0)
+            speeding_details = speeding_data
+        else:
+            s_risk = 0.0
+            speeding_details = {'speeding_risk_score': 0.0, 'message': 'Not available'}
+        
         # Compute weighted risk score
         risk_score = (
             self.alpha * t_anomaly +
             self.beta * w_risk +
             self.gamma * f_risk +
             self.delta * p_risk +
-            self.epsilon * i_risk
+            self.epsilon * i_risk +
+            self.zeta * s_risk  # Only contributes if use_google_maps=True
         )
         
         # Normalize to 0-100 scale
@@ -508,6 +538,13 @@ class RiskScorer:
                     'weight': self.epsilon,
                     'contribution': round(i_risk * self.epsilon * 100, 2),
                     'details': incident_details
+                },
+                'speeding': {
+                    'score': round(s_risk, 3),
+                    'weight': self.zeta,
+                    'contribution': round(s_risk * self.zeta * 100, 2),
+                    'details': speeding_details,
+                    'enabled': self.use_google_maps
                 }
             },
             'timestamp': datetime.now().isoformat()

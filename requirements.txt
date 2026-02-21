@@ -16,3 +16,6 @@ pytz>=2024.1
 
 # Supabase for historical data logging
 supabase>=2.0.0
+
+# Google Maps Platform APIs
+googlemaps>=4.10.0

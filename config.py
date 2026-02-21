@@ -87,15 +87,13 @@ ROAD_SAMPLING = {
     'enabled': True,              # Use road network sampling instead of fixed points
     'interval_meters': 500,       # Distance between sample points on roads
     'max_points': 150,            # Maximum sample points (stay within API limits)
-    'road_types': [               # OSM road types to include
+    'road_types': [               # OSM road types to include (reduced for faster queries)
         'motorway',
         'motorway_link',
         'trunk', 
         'trunk_link',
         'primary',
-        'primary_link',
-        'secondary',
-        'secondary_link'
+        'primary_link'
     ],
     'cache_days': 7               # Cache road network for 7 days
 }

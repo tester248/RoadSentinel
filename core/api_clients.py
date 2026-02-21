@@ -207,6 +207,92 @@ class TomTomClient(APIClient):
         
         incident_data = self.get_traffic_incidents(bbox)
         return self.parse_incidents(incident_data)
+    
+    def snap_to_roads(self, points: List[Tuple[float, float]]) -> Optional[Dict]:
+        """
+        Snap GPS coordinates to the nearest road using TomTom Snap to Roads API.
+        
+        Args:
+            points: List of (lat, lon) tuples to snap
+            
+        Returns:
+            Snapped points with road information including speed limits
+        """
+        if not points:
+            return None
+        
+        # Format points for API (lon,lat format)
+        points_str = ":".join([f"{lon},{lat}" for lat, lon in points])
+        
+        url = f"https://api.tomtom.com/routing/1/snapToRoads"
+        
+        params = {
+            'key': self.api_key,
+            'points': points_str
+        }
+        
+        logger.info(f"Snapping {len(points)} points to roads")
+        return self._make_request(url, params)
+    
+    def reverse_geocode(self, lat: float, lon: float) -> Optional[Dict]:
+        """
+        Get address and road name for coordinates using TomTom Reverse Geocoding.
+        
+        Args:
+            lat: Latitude
+            lon: Longitude
+            
+        Returns:
+            Address information including street name, city, etc.
+        """
+        url = f"https://api.tomtom.com/search/2/reverseGeocode/{lat},{lon}.json"
+        
+        params = {
+            'key': self.api_key,
+            'returnSpeedLimit': 'true',
+            'returnRoadUse': 'true',
+            'roadUse': 'LimitedAccess,Arterial,Terminal,Ramp,Rotary,LocalStreet'
+        }
+        
+        logger.info(f"Reverse geocoding ({lat}, {lon})")
+        return self._make_request(url, params)
+    
+    def get_speed_limit(self, lat: float, lon: float) -> Optional[int]:
+        """
+        Get speed limit for a location using reverse geocoding.
+        
+        Args:
+            lat: Latitude
+            lon: Longitude
+            
+        Returns:
+            Speed limit in km/h, or None if not available
+        """
+        geocode_data = self.reverse_geocode(lat, lon)
+        
+        if not geocode_data or 'addresses' not in geocode_data:
+            return None
+        
+        addresses = geocode_data.get('addresses', [])
+        if not addresses:
+            return None
+        
+        # Get speed limit from first address
+        address = addresses[0]
+        speed_limit = address.get('address', {}).get('speedLimit')
+        
+        # Convert to integer if available
+        if speed_limit:
+            try:
+                # Speed limit comes as "50 km/h" or just "50"
+                if isinstance(speed_limit, str):
+                    speed_limit = int(speed_limit.split()[0])
+                return int(speed_limit)
+            except (ValueError, IndexError):
+                logger.warning(f"Could not parse speed limit: {speed_limit}")
+                return None
+        
+        return None
 
 
 class WeatherClient(APIClient):

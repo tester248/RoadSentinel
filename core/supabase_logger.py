@@ -286,6 +286,41 @@ class SupabaseLogger:
             logger.error(f"Failed to retrieve historical risks: {e}")
             return []
     
+    def get_recent_risk_scores(self, hours_back: int = 24, limit: int = 200) -> List[Dict]:
+        """
+        Get most recent risk scores from the database (for displaying cached data).
+        
+        Args:
+            hours_back: How many hours of recent data to retrieve
+            limit: Maximum number of records to return
+            
+        Returns:
+            List of recent risk score records with full component details
+        """
+        if not self.enabled:
+            return []
+        
+        try:
+            from datetime import timedelta
+            cutoff_time = (datetime.utcnow() - timedelta(hours=hours_back)).isoformat()
+            
+            # Get most recent risk scores within time window
+            response = self.client.table('risk_scores')\
+                .select('*')\
+                .gte('timestamp', cutoff_time)\
+                .order('timestamp', desc=True)\
+                .limit(limit)\
+                .execute()
+            
+            if response.data:
+                logger.info(f"Retrieved {len(response.data)} recent risk scores from Supabase")
+            
+            return response.data
+            
+        except Exception as e:
+            logger.error(f"Failed to retrieve recent risk scores: {e}")
+            return []
+    
     def get_top_risk_locations(self, limit: int = 10, days_back: int = 7) -> List[Dict]:
         """
         Get locations with highest average risk scores.
