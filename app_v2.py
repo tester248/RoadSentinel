@@ -212,6 +212,28 @@ def fetch_osm_data(osm_client, db, bbox):
     return None, 0
 
 
+def fetch_poi_data(osm_client, db, bbox):
+    """Fetch POI data for entire bbox at once (optimized batch fetching)."""
+    # Check cache (POIs don't change often, cache for 24 hours)
+    poi_cache_key = ('pois', bbox)
+    cached = db.get_osm_cache(poi_cache_key, CACHE_TTL['osm'])
+    
+    if cached:
+        st.info("📦 Using cached POI data")
+        return cached, 0
+    
+    # Fetch all POIs in bbox at once
+    st.info("🗺️ Fetching POI data (one-time fetch for all points)...")
+    pois = osm_client.get_pois_in_bbox(bbox)
+    
+    if pois:
+        db.set_osm_cache(poi_cache_key, pois)
+        db.log_api_call('osm', 'pois')
+        return pois, 1
+    
+    return None, 0
+
+
 def fetch_incident_data(tomtom_client, bbox):
     """Fetch TomTom incident data for the bounding box."""
     try:
@@ -226,68 +248,87 @@ def fetch_incident_data(tomtom_client, bbox):
         return None, 0
 
 
-def calculate_risk_scores(traffic_results, weather_data, osm_features, scorer, osm_client=None, incident_data=None, supabase_logger=None):
+def calculate_risk_scores(traffic_results, weather_data, osm_features, scorer, 
+                          all_pois=None, incident_data=None, supabase_logger=None):
     """Calculate risk scores for all locations with POI and incident data, then log to Supabase."""
     risk_scores = []
     road_info_map = {}
     
-    for traffic_result in traffic_results:
+    # Progress tracking
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    total = len(traffic_results)
+    
+    for idx, traffic_result in enumerate(traffic_results):
         location = traffic_result['location']
         traffic_data = traffic_result['data']
         road_info = traffic_result.get('road_info', {})
         
-        # Fetch POI data from OSM (fallback for Mappls)
+        # Update progress
+        progress = (idx + 1) / total
+        progress_bar.progress(progress)
+        status_text.text(f"Calculating risks... {idx + 1}/{total}")
+        
+        # Filter POIs near this location (fast in-memory operation)
         poi_data = None
-        if osm_client:
+        if all_pois:
             try:
-                pois = osm_client.get_nearby_pois(location[0], location[1], radius=500)
-                # Calculate POI risk using same logic as Mappls
+                from core.api_clients import OSMClient
+                nearby_pois = OSMClient.filter_pois_by_distance(
+                    all_pois, 
+                    location[0], 
+                    location[1], 
+                    radius=500
+                )
+                
+                # Calculate POI risk using same logic as before
                 poi_risk = 0.0
                 poi_details = {
-                    'schools_count': len(pois['schools']),
-                    'hospitals_count': len(pois['hospitals']),
-                    'bars_count': len(pois['bars']),
-                    'bus_stops_count': len(pois['bus_stops']),
+                    'schools_count': len(nearby_pois['schools']),
+                    'hospitals_count': len(nearby_pois['hospitals']),
+                    'bars_count': len(nearby_pois['bars']),
+                    'bus_stops_count': len(nearby_pois['bus_stops']),
                     'factors': []
                 }
                 
                 # Schools increase risk
-                if pois['schools']:
-                    school_risk = min(0.4, len(pois['schools']) * 0.15)
+                if nearby_pois['schools']:
+                    school_risk = min(0.4, len(nearby_pois['schools']) * 0.15)
                     poi_risk += school_risk
                     poi_details['factors'].append({
                         'type': 'schools',
-                        'count': len(pois['schools']),
+                        'count': len(nearby_pois['schools']),
                         'risk_added': school_risk
                     })
                 
                 # Bars increase risk (DUI)
-                if pois['bars']:
-                    bar_risk = min(0.5, len(pois['bars']) * 0.20)
+                if nearby_pois['bars']:
+                    bar_risk = min(0.5, len(nearby_pois['bars']) * 0.20)
                     poi_risk += bar_risk
                     poi_details['factors'].append({
                         'type': 'bars',
-                        'count': len(pois['bars']),
+                        'count': len(nearby_pois['bars']),
                         'risk_added': bar_risk
                     })
                 
                 # Bus stops increase risk (congestion)
-                if pois['bus_stops']:
-                    bus_risk = min(0.3, len(pois['bus_stops']) * 0.10)
+                if nearby_pois['bus_stops']:
+                    bus_risk = min(0.3, len(nearby_pois['bus_stops']) * 0.10)
                     poi_risk += bus_risk
                     poi_details['factors'].append({
                         'type': 'bus_stops',
-                        'count': len(pois['bus_stops']),
+                        'count': len(nearby_pois['bus_stops']),
                         'risk_added': bus_risk
                     })
                 
                 # Hospitals reduce risk (emergency response)
-                if pois['hospitals']:
-                    hospital_benefit = min(0.2, len(pois['hospitals']) * 0.10)
+                if nearby_pois['hospitals']:
+                    hospital_benefit = min(0.2, len(nearby_pois['hospitals']) * 0.10)
                     poi_risk -= hospital_benefit
                     poi_details['factors'].append({
                         'type': 'hospitals',
-                        'count': len(pois['hospitals']),
+                        'count': len(nearby_pois['hospitals']),
                         'risk_added': -hospital_benefit
                     })
                 
@@ -296,7 +337,7 @@ def calculate_risk_scores(traffic_results, weather_data, osm_features, scorer, o
                 poi_data = poi_details
                 
             except Exception as e:
-                logger.error(f"Failed to fetch POI data: {e}")
+                logger.error(f"Failed to calculate POI risk: {e}")
         
         risk_result = scorer.calculate_risk_score(
             location,
@@ -313,6 +354,9 @@ def calculate_risk_scores(traffic_results, weather_data, osm_features, scorer, o
         
         risk_scores.append(risk_result)
         road_info_map[(location[0], location[1])] = road_info
+    
+    progress_bar.empty()
+    status_text.empty()
     
     # Batch log to Supabase
     if supabase_logger and supabase_logger.enabled and SUPABASE_LOGGING['log_risks']:
@@ -638,13 +682,22 @@ def main():
             st.success(f"✅ Incidents: {incident_count} total ({accidents} accidents, {closures} closures, {road_works} road works)")
         else:
             st.info("ℹ️ No incidents found in area")
+        
+        # POI data (batch fetch once for entire area)
+        st.info("📍 Fetching POI data...")
+        all_pois, poi_api_calls = fetch_poi_data(osm_client, db, bbox)
+        if all_pois:
+            total_pois = sum(len(v) for v in all_pois.values())
+            st.success(f"✅ POIs: {total_pois} total ({poi_api_calls} new API calls)")
+        else:
+            st.info("ℹ️ No POI data available")
     
-    # Calculate risk scores
-    with st.spinner("Calculating risk scores with POI & incident data..."):
+    # Calculate risk scores (now much faster with batch POI data!)
+    with st.spinner("Calculating risk scores..."):
         scorer = RiskScorer()
         risk_scores = calculate_risk_scores(
             traffic_results, weather_data, osm_features, scorer, 
-            osm_client=osm_client, incident_data=incident_data, supabase_logger=supabase_logger
+            all_pois=all_pois, incident_data=incident_data, supabase_logger=supabase_logger
         )
     
     # Display statistics

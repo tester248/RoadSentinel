@@ -451,8 +451,137 @@ class OSMClient(APIClient):
             
         except Exception as e:
             logger.error(f"OSM POI search failed: {e}")
+            return {'schools': [], 'hospitals': [], 'bars': [], 'bus_stops': []}    
+    def get_pois_in_bbox(self, bbox: Tuple[float, float, float, float]) -> Dict[str, List]:
+        """
+        Fetch all POIs in a bounding box at once (optimized for batch processing).
+        
+        Args:
+            bbox: (min_lat, min_lon, max_lat, max_lon)
+            
+        Returns:
+            Dictionary with categorized POIs including coordinates
+        """
+        min_lat, min_lon, max_lat, max_lon = bbox
+        
+        query = f"""
+        [out:json][timeout:30];
+        (
+          // Schools
+          node["amenity"~"school|college|university"]({min_lat},{min_lon},{max_lat},{max_lon});
+          way["amenity"~"school|college|university"]({min_lat},{min_lon},{max_lat},{max_lon});
+          
+          // Hospitals
+          node["amenity"~"hospital|clinic|doctors"]({min_lat},{min_lon},{max_lat},{max_lon});
+          way["amenity"~"hospital|clinic|doctors"]({min_lat},{min_lon},{max_lat},{max_lon});
+          
+          // Bars/Pubs
+          node["amenity"~"bar|pub|nightclub"]({min_lat},{min_lon},{max_lat},{max_lon});
+          node["shop"="alcohol"]({min_lat},{min_lon},{max_lat},{max_lon});
+          way["amenity"~"bar|pub|nightclub"]({min_lat},{min_lon},{max_lat},{max_lon});
+          
+          // Bus stops
+          node["highway"="bus_stop"]({min_lat},{min_lon},{max_lat},{max_lon});
+          node["public_transport"~"station|stop_position"]({min_lat},{min_lon},{max_lat},{max_lon});
+          way["public_transport"="station"]({min_lat},{min_lon},{max_lat},{max_lon});
+        );
+        out center;
+        """
+        
+        try:
+            response = requests.post(
+                self.base_url,
+                data={'data': query},
+                timeout=30
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            # Categorize POIs with full coordinates
+            pois = {
+                'schools': [],
+                'hospitals': [],
+                'bars': [],
+                'bus_stops': []
+            }
+            
+            for element in data.get('elements', []):
+                tags = element.get('tags', {})
+                amenity = tags.get('amenity', '')
+                shop = tags.get('shop', '')
+                highway = tags.get('highway', '')
+                transport = tags.get('public_transport', '')
+                
+                # Get coordinates (handle both nodes and ways)
+                if 'lat' in element and 'lon' in element:
+                    point_lat, point_lon = element['lat'], element['lon']
+                elif 'center' in element:
+                    point_lat = element['center']['lat']
+                    point_lon = element['center']['lon']
+                else:
+                    continue
+                
+                poi_info = {
+                    'name': tags.get('name', 'Unnamed'),
+                    'latitude': point_lat,
+                    'longitude': point_lon
+                }
+                
+                # Categorize
+                if amenity in ['school', 'college', 'university']:
+                    pois['schools'].append(poi_info)
+                elif amenity in ['hospital', 'clinic', 'doctors']:
+                    pois['hospitals'].append(poi_info)
+                elif amenity in ['bar', 'pub', 'nightclub'] or shop == 'alcohol':
+                    pois['bars'].append(poi_info)
+                elif highway == 'bus_stop' or transport in ['station', 'stop_position']:
+                    pois['bus_stops'].append(poi_info)
+            
+            total_pois = sum(len(v) for v in pois.values())
+            logger.info(f"OSM POIs in bbox: {total_pois} total (schools: {len(pois['schools'])}, hospitals: {len(pois['hospitals'])}, bars: {len(pois['bars'])}, bus_stops: {len(pois['bus_stops'])})")
+            return pois
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch OSM POIs in bbox: {e}")
             return {'schools': [], 'hospitals': [], 'bars': [], 'bus_stops': []}
-
+    
+    @staticmethod
+    def filter_pois_by_distance(pois_dict: Dict[str, List], lat: float, lon: float, 
+                                 radius: float = 500) -> Dict[str, List]:
+        """
+        Filter POIs by distance from a point (fast in-memory calculation).
+        
+        Args:
+            pois_dict: Dictionary of POIs with lat/lon
+            lat, lon: Center point
+            radius: Radius in meters
+            
+        Returns:
+            Filtered POIs with distance added
+        """
+        from math import radians, cos, sin, asin, sqrt
+        
+        filtered = {
+            'schools': [],
+            'hospitals': [],
+            'bars': [],
+            'bus_stops': []
+        }
+        
+        for category, poi_list in pois_dict.items():
+            for poi in poi_list:
+                # Calculate distance using haversine
+                dlat = radians(poi['latitude'] - lat)
+                dlon = radians(poi['longitude'] - lon)
+                a = sin(dlat/2)**2 + cos(radians(lat)) * cos(radians(poi['latitude'])) * sin(dlon/2)**2
+                distance = 2 * asin(sqrt(a)) * 6371000  # meters
+                
+                if distance <= radius:
+                    poi_with_dist = poi.copy()
+                    poi_with_dist['distance'] = round(distance)
+                    filtered[category].append(poi_with_dist)
+        
+        return filtered
 
 def test_apis():
     """Test function to verify API connectivity."""
