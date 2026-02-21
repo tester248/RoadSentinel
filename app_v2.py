@@ -8,6 +8,9 @@ from streamlit_folium import folium_static
 from datetime import datetime
 from dotenv import load_dotenv
 import logging
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
 # Import project modules
 from core.api_clients import TomTomClient, WeatherClient, OSMClient
@@ -16,6 +19,7 @@ from core.risk_model import RiskScorer
 from core.road_network import RoadNetworkSampler
 from core.supabase_logger import SupabaseLogger
 from core.google_maps_client import GoogleMapsClient
+from core.incident_analytics import IncidentAnalytics
 from config import (
     PUNE_CENTER, PUNE_BBOX, TRAFFIC_SAMPLE_POINTS,
     CACHE_TTL, ROAD_SAMPLING, SUPABASE_LOGGING
@@ -303,18 +307,72 @@ def fetch_poi_data(osm_client, db, bbox, data_source='osm'):
     return None, 0
 
 
-def fetch_incident_data(tomtom_client, bbox):
-    """Fetch TomTom incident data for the bounding box."""
+def fetch_incident_data(tomtom_client, bbox, supabase_logger=None):
+    """
+    Fetch and merge incident data from multiple sources:
+    - TomTom Traffic Incidents API (real-time official data)
+    - Supabase incidents table (AI news scraper + user reports)
+    
+    Args:
+        tomtom_client: TomTomClient instance
+        bbox: Bounding box for filtering
+        supabase_logger: SupabaseLogger instance for fetching news/user incidents
+        
+    Returns:
+        (merged_categorized_incidents, total_count)
+    """
+    merged_incidents = {
+        'accidents': [],
+        'road_works': [],
+        'closures': [],
+        'weather_hazards': [],
+        'traffic_jams': [],
+        'vehicle_hazards': [],
+        'protests': [],
+        'other': []
+    }
+    
+    tomtom_count = 0
+    supabase_count = 0
+    
+    # Fetch TomTom incidents (official API)
     try:
         incident_data = tomtom_client.get_traffic_incidents(bbox)
         if incident_data:
             categorized = tomtom_client.parse_incidents(incident_data)
-            total_incidents = sum(len(v) for v in categorized.values())
-            return categorized, total_incidents
-        return None, 0
+            
+            # Add source marker to TomTom incidents
+            for category, incidents in categorized.items():
+                for incident in incidents:
+                    incident['source'] = 'tomtom'
+                    incident['verified'] = True  # Official API data is pre-verified
+                    merged_incidents[category].append(incident)
+                    tomtom_count += 1
+                    
     except Exception as e:
-        logger.error(f"Failed to fetch incident data: {e}")
-        return None, 0
+        logger.error(f"Failed to fetch TomTom incidents: {e}")
+    
+    # Fetch Supabase incidents (AI news + user reports)
+    if supabase_logger and supabase_logger.enabled:
+        try:
+            raw_incidents = supabase_logger.get_active_incidents(bbox=bbox, hours_back=24)
+            categorized_supabase = supabase_logger.categorize_supabase_incidents(raw_incidents)
+            
+            # Merge with TomTom incidents
+            for category, incidents in categorized_supabase.items():
+                if category in merged_incidents:
+                    merged_incidents[category].extend(incidents)
+                    supabase_count += len(incidents)
+                    
+        except Exception as e:
+            logger.error(f"Failed to fetch Supabase incidents: {e}")
+    
+    total = tomtom_count + supabase_count
+    
+    if tomtom_count > 0 or supabase_count > 0:
+        logger.info(f"Incidents: {tomtom_count} from TomTom, {supabase_count} from Supabase/News (total: {total})")
+    
+    return merged_incidents, total
 
 
 def load_recent_risk_scores_from_supabase(supabase_logger, hours_back=24):
@@ -733,11 +791,44 @@ def create_risk_map(risk_scores, risk_threshold, roads=None, incident_data=None)
                 else:
                     inc_lat, inc_lon = coords[1], coords[0]
                 
-                severity_text = ['None', 'Minor', 'Moderate', 'Major', 'Undefined'][accident.get('severity', 4)]
+                # Determine source and styling
+                source = accident.get('source', 'unknown')
+                is_mobile = source == 'mobile_upload'
+                is_news = source == 'news_scraper'
+                is_tomtom = source == 'tomtom'
+                severity_text = ['None', 'Minor', 'Moderate', 'Major', 'Undefined'][min(accident.get('severity', 4), 4)]
+                
+                # Build popup with source info
+                popup_text = f"<b>🚗 Accident</b>"
+                if is_mobile:
+                    popup_text += " <span style='background:#4CAF50;padding:2px 6px;border-radius:3px;font-size:10px;color:white'>📱 MOBILE</span>"
+                    if accident.get('reporter_id'):
+                        popup_text += f"<br><small>Reporter: {accident['reporter_id'][:8]}</small>"
+                    if accident.get('photo_url'):
+                        popup_text += f"<br><small><a href='{accident['photo_url']}' target='_blank'>📸 View Photo</a></small>"
+                elif is_news:
+                    popup_text += " <span style='background:#FFD700;padding:2px 6px;border-radius:3px;font-size:10px'>📰 NEWS</span>"
+                    if accident.get('news_url'):
+                        popup_text += f"<br><small><a href='{accident['news_url']}' target='_blank'>Source Link</a></small>"
+                elif is_tomtom:
+                    popup_text += " <span style='background:#2196F3;padding:2px 6px;border-radius:3px;font-size:10px;color:white'>⚡ VERIFIED</span>"
+                
+                popup_text += f"<br>Severity: {severity_text}<br>{accident.get('description', 'No details')[:200]}"
+                if accident.get('location_name'):
+                    popup_text += f"<br><small>📍 {accident['location_name']}</small>"
+                
+                tooltip_text = "Accident"
+                if is_mobile:
+                    tooltip_text += " (Mobile Report)"
+                elif is_news:
+                    tooltip_text += " (News)"
+                elif is_tomtom:
+                    tooltip_text += " (Verified)"
+                
                 folium.Marker(
                     location=[inc_lat, inc_lon],
-                    popup=f"<b>🚗 Accident</b><br>Severity: {severity_text}<br>{accident.get('description', 'No details')}",
-                    tooltip="Accident",
+                    popup=folium.Popup(popup_text, max_width=300),
+                    tooltip=tooltip_text,
                     icon=folium.Icon(color='red', icon='exclamation-triangle', prefix='fa')
                 ).add_to(incident_cluster)
         
@@ -750,10 +841,37 @@ def create_risk_map(risk_scores, risk_threshold, roads=None, incident_data=None)
                 else:
                     inc_lat, inc_lon = coords[1], coords[0]
                 
+                source = closure.get('source', 'unknown')
+                is_mobile = source == 'mobile_upload'
+                is_news = source == 'news_scraper'
+                is_tomtom = source == 'tomtom'
+                
+                popup_text = f"<b>🚧 Road Closure</b>"
+                if is_mobile:
+                    popup_text += " <span style='background:#4CAF50;padding:2px 6px;border-radius:3px;font-size:10px;color:white'>📱 MOBILE</span>"
+                    if closure.get('reporter_id'):
+                        popup_text += f"<br><small>Reporter: {closure['reporter_id'][:8]}</small>"
+                elif is_news:
+                    popup_text += " <span style='background:#FFD700;padding:2px 6px;border-radius:3px;font-size:10px'>📰 NEWS</span>"
+                    if closure.get('news_url'):
+                        popup_text += f"<br><small><a href='{closure['news_url']}' target='_blank'>Source Link</a></small>"
+                elif is_tomtom:
+                    popup_text += " <span style='background:#2196F3;padding:2px 6px;border-radius:3px;font-size:10px;color:white'>⚡ VERIFIED</span>"
+                
+                popup_text += f"<br>{closure.get('description', 'No details')[:200]}"
+                if closure.get('location_name'):
+                    popup_text += f"<br><small>📍 {closure['location_name']}</small>"
+                
+                tooltip_text = "Road Closed"
+                if is_mobile:
+                    tooltip_text += " (Mobile)"
+                elif is_news:
+                    tooltip_text += " (News)"
+                
                 folium.Marker(
                     location=[inc_lat, inc_lon],
-                    popup=f"<b>🚧 Road Closure</b><br>{closure.get('description', 'No details')}",
-                    tooltip="Road Closed",
+                    popup=folium.Popup(popup_text, max_width=300),
+                    tooltip=tooltip_text,
                     icon=folium.Icon(color='black', icon='times', prefix='fa')
                 ).add_to(incident_cluster)
         
@@ -766,11 +884,66 @@ def create_risk_map(risk_scores, risk_threshold, roads=None, incident_data=None)
                 else:
                     inc_lat, inc_lon = coords[1], coords[0]
                 
+                source = work.get('source', 'unknown')
+                is_mobile = source == 'mobile_upload'
+                is_news = source == 'news_scraper'
+                is_tomtom = source == 'tomtom'
+                
+                popup_text = f"<b>👷 Road Works</b>"
+                if is_mobile:
+                    popup_text += " <span style='background:#4CAF50;padding:2px 6px;border-radius:3px;font-size:10px;color:white'>📱 MOBILE</span>"
+                elif is_news:
+                    popup_text += " <span style='background:#FFD700;padding:2px 6px;border-radius:3px;font-size:10px'>📰 NEWS</span>"
+                    if work.get('news_url'):
+                        popup_text += f"<br><small><a href='{work['news_url']}' target='_blank'>Source Link</a></small>"
+                elif is_tomtom:
+                    popup_text += " <span style='background:#2196F3;padding:2px 6px;border-radius:3px;font-size:10px;color:white'>⚡ VERIFIED</span>"
+                
+                popup_text += f"<br>{work.get('description', 'No details')[:200]}"
+                if work.get('location_name'):
+                    popup_text += f"<br><small>📍 {work['location_name']}</small>"
+                
                 folium.Marker(
                     location=[inc_lat, inc_lon],
-                    popup=f"<b>👷 Road Works</b><br>{work.get('description', 'No details')}",
-                    tooltip="Road Works",
+                    popup=folium.Popup(popup_text, max_width=300),
+                    tooltip="Road Works" + (" (Mobile)" if is_mobile else (" (News)" if is_news else "")),
                     icon=folium.Icon(color='orange', icon='wrench', prefix='fa')
+                ).add_to(incident_cluster)
+        
+        # Protest/Event markers (purple megaphone) - NEW!
+        for protest in incident_data.get('protests', []):
+            coords = protest.get('coordinates', [])
+            if coords and len(coords) >= 2:
+                if isinstance(coords[0], list):
+                    inc_lat, inc_lon = coords[0][1], coords[0][0]
+                else:
+                    inc_lat, inc_lon = coords[1], coords[0]
+                
+                source = protest.get('source', 'unknown')
+                is_mobile = source == 'mobile_upload'
+                is_news = source == 'news_scraper'
+                priority = protest.get('priority', 'medium')
+                
+                popup_text = f"<b>📢 Protest/Rally/Event</b>"
+                if is_mobile:
+                    popup_text += " <span style='background:#4CAF50;padding:2px 6px;border-radius:3px;font-size:10px;color:white'>📱 MOBILE</span>"
+                else:
+                    popup_text += " <span style='background:#FFD700;padding:2px 6px;border-radius:3px;font-size:10px'>📰 NEWS</span>"
+                    
+                if protest.get('news_url'):
+                    popup_text += f"<br><small><a href='{protest['news_url']}' target='_blank'>Source Link</a></small>"
+                popup_text += f"<br>Priority: {priority.upper()}"
+                popup_text += f"<br>{protest.get('description', 'No details')[:200]}"
+                if protest.get('location_name'):
+                    popup_text += f"<br><small>📍 {protest['location_name']}</small>"
+                if protest.get('estimated_volunteers') and protest['estimated_volunteers'] > 0:
+                    popup_text += f"<br><small>👥 Est. Impact: {protest['estimated_volunteers']} volunteers recommended</small>"
+                
+                folium.Marker(
+                    location=[inc_lat, inc_lon],
+                    popup=folium.Popup(popup_text, max_width=300),
+                    tooltip=f"Protest/Event (" + ("Mobile" if is_mobile else "News") + f" - {priority})",
+                    icon=folium.Icon(color='purple', icon='bullhorn', prefix='fa')
                 ).add_to(incident_cluster)
     
     return risk_map, len(filtered_scores)
@@ -817,7 +990,7 @@ def main():
     if not tomtom_client:
         st.stop()
     
-    # Data source selector (Google Maps vs OSM)
+    # Data source selector ( Google Maps vs OSM)
     st.sidebar.markdown("---")
     st.sidebar.subheader("📍 POI Data Source")
     
@@ -838,6 +1011,28 @@ def main():
             st.sidebar.info("ℹ️ Using OSM data")
     else:
         st.sidebar.info("ℹ️ OSM data only (add GOOGLE_MAPS_API_KEY for Google Maps)")
+    
+    # Map visualization type selector
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🗺️ Map Type")
+    map_viz_type = st.sidebar.radio(
+        "Select map visualization:",
+        options=["Folium (Interactive)", "Google Maps (Satellite)"],
+        index=0,
+        help="Folium: Feature-rich interactive map\nGoogle Maps: Satellite imagery option"
+    )
+    
+    use_google_map_viz = map_viz_type == "Google Maps (Satellite)"
+    
+    if use_google_map_viz:
+        google_map_type = st.sidebar.radio(
+            "Google Maps View:",
+            options=["roadmap", "satellite", "hybrid", "terrain"],
+            index=1,  # Default to satellite
+            help="Choose map display type"
+        )
+    else:
+        google_map_type = "roadmap"
     
     # Risk threshold slider
     risk_threshold = st.sidebar.slider(
@@ -971,15 +1166,35 @@ def main():
                 total_features = sum(len(v) for v in osm_features.values())
                 st.success(f"✅ Infrastructure: {total_features} features ({osm_api_calls} new API calls)")
             
-            # Incident data from TomTom
-            st.info("🚨 Fetching traffic incidents...")
-            incident_data, incident_count = fetch_incident_data(tomtom_client, bbox)
+            # Incident data from multiple sources (TomTom API + Supabase news/user reports)
+            st.info("🚨 Fetching traffic incidents from multiple sources...")
+            incident_data, incident_count = fetch_incident_data(tomtom_client, bbox, supabase_logger)
+            
+            # Store incident_data in session state for analytics
+            st.session_state.incident_data = incident_data
+            
             if incident_data:
-                # Show incident summary
+                # Show incident summary with source breakdown
                 accidents = len(incident_data.get('accidents', []))
                 closures = len(incident_data.get('closures', []))
                 road_works = len(incident_data.get('road_works', []))
-                st.success(f"✅ Incidents: {incident_count} total ({accidents} accidents, {closures} closures, {road_works} road works)")
+                protests = len(incident_data.get('protests', []))
+                
+                # Count by source (updated to include mobile_upload)
+                tomtom_incidents = sum(1 for cat in incident_data.values() for inc in cat if inc.get('source') == 'tomtom')
+                news_incidents = sum(1 for cat in incident_data.values() for inc in cat if inc.get('source') == 'news_scraper')
+                mobile_incidents = sum(1 for cat in incident_data.values() for inc in cat if inc.get('source') == 'mobile_upload')
+                
+                summary_parts = [
+                    f"⚡ {tomtom_incidents} TomTom" if tomtom_incidents > 0 else "",
+                    f"📰 {news_incidents} News" if news_incidents > 0 else "",
+                    f"📱 {mobile_incidents} Mobile App" if mobile_incidents > 0 else ""
+                ]
+                source_summary = " | ".join([s for s in summary_parts if s])
+                
+                st.success(f"✅ Incidents: {incident_count} total ({accidents} accidents, {closures} closures, {road_works} road works, {protests} protests)")
+                if source_summary:
+                    st.info(f"📊 Sources: {source_summary}")
             else:
                 st.info("ℹ️ No incidents found in area")
             
@@ -1019,6 +1234,145 @@ def main():
     
     # At this point, risk_scores is populated either from fresh data, session cache, or Supabase
     
+    # ========== INCIDENT ANALYTICS SECTION ==========
+    if 'incident_data' in st.session_state and st.session_state.incident_data:
+        st.markdown("---")
+        st.markdown("### 🚨 Incident Intelligence Dashboard")
+        st.markdown("*Identifying high-risk road locations through incident analysis*")
+        
+        incident_data = st.session_state.incident_data
+        analytics = IncidentAnalytics()
+        
+        # Analyze incident distribution
+        stats = analytics.analyze_incident_distribution(incident_data)
+        
+        # Show key metrics
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("📊 Total Incidents", stats['total'])
+        col2.metric("📱 Mobile Reports", stats['mobile_app_count'])
+        col3.metric("📰 News Sources", stats['news_count'])
+        col4.metric("⚡ Official (TomTom)", stats['official_count'])
+        
+        # Create visualizations
+        viz_col1, viz_col2 = st.columns(2)
+        
+        with viz_col1:
+            # Incident by category pie chart
+            if stats['by_category']:
+                category_data = pd.DataFrame(
+                    list(stats['by_category'].items()),
+                    columns=['Category', 'Count']
+                )
+                category_data = category_data[category_data['Count'] > 0]
+                
+                fig_category = px.pie(
+                    category_data,
+                    values='Count',
+                    names='Category',
+                    title='📋 Incidents by Category',
+                    color_discrete_sequence=px.colors.qualitative.Set3
+                )
+                fig_category.update_layout(height=350)
+                st.plotly_chart(fig_category, use_container_width=True)
+        
+        with viz_col2:
+            # Incident by source bar chart
+            if stats['by_source']:
+                source_data = pd.DataFrame(
+                    list(stats['by_source'].items()),
+                    columns=['Source', 'Count']
+                )
+                
+                fig_source = px.bar(
+                    source_data,
+                    x='Source',
+                    y='Count',
+                    title='📡 Incidents by Source',
+                    color='Source',
+                    color_discrete_map={
+                        'Mobile App': '#4CAF50',
+                        'News Sources': '#FF9800',
+                        'TomTom Official': '#2196F3'
+                    }
+                )
+                fig_source.update_layout(height=350, showlegend=False)
+                st.plotly_chart(fig_source, use_container_width=True)
+        
+        # Priority distribution
+        if stats['by_priority']:
+            priority_data = pd.DataFrame(
+                list(stats['by_priority'].items()),
+                columns=['Priority', 'Count']
+            )
+            priority_order = ['low', 'medium', 'high', 'critical']
+            priority_data['Priority'] = pd.Categorical(
+                priority_data['Priority'],
+                categories=priority_order,
+                ordered=True
+            )
+            priority_data = priority_data.sort_values('Priority')
+            
+            fig_priority = px.bar(
+                priority_data,
+                x='Priority',
+                y='Count',
+                title='⚠️ Incident Priority Distribution',
+                color='Priority',
+                color_discrete_map={
+                    'low': '#4CAF50',
+                    'medium': '#FFC107',
+                    'high': '#FF5722',
+                    'critical': '#B71C1C'
+                }
+            )
+            fig_priority.update_layout(height=300, showlegend=False)
+            st.plotly_chart(fig_priority, use_container_width=True)
+        
+        # High-risk cluster identification
+        st.markdown("#### 🎯 High-Risk Location Clusters")
+        st.markdown("*Areas with multiple incidents indicate increased risk*")
+        
+        with st.spinner("Identifying high-risk clusters using DBSCAN..."):
+            clusters = analytics.identify_high_risk_clusters(incident_data, eps_km=0.5, min_samples=2)
+        
+        if clusters:
+            st.success(f"✅ Identified {len(clusters)} high-risk clusters")
+            
+            # Show top 5 clusters
+            for i, cluster in enumerate(clusters[:5], 1):
+                risk_color = {
+                    'critical': '🔴',
+                    'high': '🟠',
+                    'medium': '🟡',
+                    'low': '🟢'
+                }.get(cluster['risk_level'], '⚪')
+                
+                with st.expander(f"{risk_color} Cluster #{i}: {cluster['incident_count']} incidents - {cluster['risk_level'].upper()} risk"):
+                    cluster_col1, cluster_col2 = st.columns(2)
+                    
+                    with cluster_col1:
+                        st.write(f"**Location:** {cluster['center']['lat']:.4f}, {cluster['center']['lon']:.4f}")
+                        st.write(f"**Incident Count:** {cluster['incident_count']}")
+                        st.write(f"**Risk Level:** {cluster['risk_level'].upper()}")
+                    
+                    with cluster_col2:
+                        st.write("**Categories:**")
+                        for cat, count in cluster['categories'].items():
+                            st.write(f"  • {cat}: {count}")
+                    
+                    st.write("**Sources:**")
+                    for src, count in cluster['sources'].items():
+                        source_icon = '📱' if src == 'mobile_upload' else ('📰' if src == 'news_scraper' else '⚡')
+                        st.write(f"  {source_icon} {src}: {count}")
+        else:
+            st.info("ℹ️ No significant incident clusters identified (incidents are spread out)")
+        
+        # Incident heatmap data preparation
+        heatmap_data = analytics.get_incident_heatmap_data(incident_data)
+        st.session_state.incident_heatmap_data = heatmap_data
+        
+        st.markdown("---")
+    
     # Display statistics
     st.markdown("### 📈 Risk Analysis Summary")
     
@@ -1034,19 +1388,82 @@ def main():
     col3.metric("🟡 Medium", medium_count)
     col4.metric("🟢 Low", low_count)
     
-    # Display map
-    st.markdown("### 🗺️ Interactive Risk Map - Road Network View")
-    
-    with st.spinner("Generating map with road segments and incidents..."):
-        risk_map, displayed_count = create_risk_map(
-            risk_scores, 
-            risk_threshold, 
-            roads if use_road_sampling else None,
-            incident_data=incident_data
+    # Display map with type selection
+    if use_google_map_viz and google_maps_client and google_maps_client.enabled:
+        st.markdown(f"### 🗺️ Google Maps View - {google_map_type.capitalize()} Mode")
+        st.markdown("*Satellite and terrain views for detailed geographic analysis*")
+        
+        from core.google_maps_component import render_google_maps
+        
+        # Prepare markers for Google Maps
+        google_markers = []
+        
+        # Add risk location markers
+        for risk in risk_scores:
+            if risk['risk_score'] >= risk_threshold:
+                color_mapping = {
+                    'critical': 'red',
+                    'high': 'orange',
+                    'medium': 'yellow',
+                    'low': 'green'
+                }
+                color = color_mapping.get(risk['risk_level'], 'gray')
+                
+                google_markers.append({
+                    'lat': risk['location']['lat'],
+                    'lon': risk['location']['lon'],
+                    'title': f"{risk.get('road_name', 'Location')} - Risk: {risk['risk_score']}/100",
+                    'info': f"Risk Level: {risk['risk_level'].upper()}<br>Score: {risk['risk_score']}/100",
+                    'color': color
+                })
+        
+        # Add incident markers
+        if incident_data:
+            for category, incidents in incident_data.items():
+                for incident in incidents:
+                    coords = incident.get('coordinates', [])
+                    if coords and len(coords) >= 2:
+                        if isinstance(coords[0], list):
+                            inc_lat, inc_lon = coords[0][1], coords[0][0]
+                        else:
+                            inc_lat, inc_lon = coords[1], coords[0]
+                        
+                        source = incident.get('source', 'unknown')
+                        source_icon = '📱' if source == 'mobile_upload' else ('📰' if source == 'news_scraper' else '⚡')
+                        
+                        google_markers.append({
+                            'lat': inc_lat,
+                            'lon': inc_lon,
+                            'title': f"{source_icon} {category.replace('_', ' ').title()}",
+                            'info': f"{incident.get('description', 'No details')[:150]}<br><small>Source: {source}</small>",
+                            'color': 'purple' if category == 'protests' else 'red'
+                        })
+        
+        render_google_maps(
+            center_lat=PUNE_CENTER['lat'],
+            center_lon=PUNE_CENTER['lon'],
+            markers=google_markers,
+            map_type=google_map_type,
+            zoom=12,
+            height=650
         )
-    
-    st.info(f"Displaying {displayed_count} locations with risk ≥ {risk_threshold}")
-    folium_static(risk_map, width=1400, height=650)
+        
+        st.info(f"📍 Displaying {len(google_markers)} locations on Google Maps")
+        
+    else:
+        # Use Folium map (default)
+        st.markdown("### 🗺️ Interactive Risk Map - Road Network View")
+        
+        with st.spinner("Generating map with road segments and incidents..."):
+            risk_map, displayed_count = create_risk_map(
+                risk_scores, 
+                risk_threshold, 
+                roads if use_road_sampling else None,
+                incident_data=incident_data
+            )
+        
+        st.info(f"Displaying {displayed_count} locations with risk ≥ {risk_threshold}")
+        folium_static(risk_map, width=1400, height=650)
     
     # Top risky roads
     if use_road_sampling:

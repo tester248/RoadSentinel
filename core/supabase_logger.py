@@ -321,6 +321,144 @@ class SupabaseLogger:
             logger.error(f"Failed to retrieve recent risk scores: {e}")
             return []
     
+    def get_active_incidents(self, bbox: tuple = None, hours_back: int = 72) -> List[Dict]:
+        """
+        Fetch active incidents from Supabase incidents table (news + user reports).
+        
+        Args:
+            bbox: Optional bounding box (min_lat, min_lon, max_lat, max_lon)
+            hours_back: Only get incidents from last N hours (default 72 for news incidents)
+            
+        Returns:
+            List of incident records with all fields (filters out records without coordinates)
+        """
+        if not self.enabled:
+            return []
+        
+        try:
+            from datetime import timedelta
+            
+            # Base query - get recent incidents
+            # Note: Using 'created_at' instead of 'timestamp', and 'unassigned'/'assigned' status
+            query = self.client.table('incidents')\
+                .select('*')
+            
+            # Filter by time (use created_at field)
+            cutoff_time = (datetime.utcnow() - timedelta(hours=hours_back)).isoformat()
+            query = query.gte('created_at', cutoff_time)
+            
+            # Execute query
+            response = query.execute()
+            
+            all_incidents = response.data if response.data else []
+            
+            # Filter out incidents without coordinates (need geocoding)
+            incidents = [
+                inc for inc in all_incidents 
+                if inc.get('latitude') is not None and inc.get('longitude') is not None
+            ]
+            
+            # Apply bounding box filter if provided
+            if bbox and incidents:
+                min_lat, min_lon, max_lat, max_lon = bbox
+                incidents = [
+                    inc for inc in incidents
+                    if min_lat <= inc['latitude'] <= max_lat
+                    and min_lon <= inc['longitude'] <= max_lon
+                ]
+            
+            skipped = len(all_incidents) - len(incidents)
+            if skipped > 0:
+                logger.warning(f"Skipped {skipped} incidents without coordinates (need geocoding)")
+            
+            logger.info(f"Retrieved {len(incidents)} geocoded incidents from Supabase (from {len(all_incidents)} total)")
+            return incidents
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch incidents from Supabase: {e}")
+            return []
+    
+    def categorize_supabase_incidents(self, incidents: List[Dict]) -> Dict[str, List]:
+        """
+        Categorize Supabase incidents into TomTom-compatible format.
+        
+        Actual schema fields:
+        - reason: 'accident', 'construction', 'unknown', etc.
+        - title: news headline
+        - priority: 'low', 'medium', 'high'
+        - location_text: human-readable location
+        
+        Returns:
+            Dict matching TomTom format: accidents, road_works, closures, etc.
+        """
+        categorized = {
+            'accidents': [],
+            'road_works': [],
+            'closures': [],
+            'weather_hazards': [],
+            'traffic_jams': [],
+            'vehicle_hazards': [],
+            'protests': [],
+            'other': []
+        }
+        
+        # Priority to severity mapping (1-5 scale)
+        priority_to_severity = {
+            'low': 2,
+            'medium': 3,
+            'high': 4,
+            'critical': 5
+        }
+        
+        for incident in incidents:
+            incident_type = incident.get('reason', 'unknown').lower()
+            
+            # Determine actual source (mobile_upload vs news URL)
+            raw_source = incident.get('source', 'unknown')
+            is_mobile = raw_source == 'mobile_upload'
+            is_news = raw_source.startswith('http') if isinstance(raw_source, str) else False
+            
+            # Map incident to TomTom-compatible format
+            incident_info = {
+                'description': incident.get('title', ''),  # Use title as description
+                'severity': priority_to_severity.get(incident.get('priority', 'medium'), 3),
+                'source': 'mobile_upload' if is_mobile else ('news_scraper' if is_news else 'unknown'),
+                'coordinates': [incident.get('longitude'), incident.get('latitude')],
+                'timestamp': incident.get('occurred_at') or incident.get('created_at'),
+                'verified': is_mobile,  # Mobile reports are from users in field, more reliable
+                'news_url': raw_source if is_news else None,  # Source URL for news
+                'location_name': incident.get('location_text'),
+                'incident_id': incident.get('id'),
+                'priority': incident.get('priority', 'medium'),
+                'status': incident.get('status'),
+                # Additional fields for display
+                'required_skills': incident.get('required_skills', []),
+                'actions_needed': incident.get('actions_needed', []),
+                'estimated_volunteers': incident.get('estimated_volunteers', 0),
+                'reporter_id': incident.get('reporter_id'),  # For mobile uploads
+                'photo_url': incident.get('photo_url')  # User-submitted photos
+            }
+            
+            # Categorize by reason field
+            if incident_type in ['accident', 'crash', 'collision']:
+                categorized['accidents'].append(incident_info)
+            elif incident_type in ['construction', 'roadwork', 'maintenance', 'repair']:
+                categorized['road_works'].append(incident_info)
+            elif incident_type in ['closure', 'blocked', 'closed', 'road closure']:
+                categorized['closures'].append(incident_info)
+            elif incident_type in ['flooding', 'flood', 'rain', 'fog', 'weather']:
+                categorized['weather_hazards'].append(incident_info)
+            elif incident_type in ['congestion', 'traffic', 'jam', 'traffic jam']:
+                categorized['traffic_jams'].append(incident_info)
+            elif incident_type in ['breakdown', 'vehicle', 'hazard', 'vehicle breakdown']:
+                categorized['vehicle_hazards'].append(incident_info)
+            elif incident_type in ['protest', 'rally', 'demonstration', 'procession', 'event']:
+                categorized['protests'].append(incident_info)
+            else:
+                categorized['other'].append(incident_info)
+        
+        return categorized
+    
     def get_top_risk_locations(self, limit: int = 10, days_back: int = 7) -> List[Dict]:
         """
         Get locations with highest average risk scores.
@@ -412,6 +550,43 @@ CREATE TABLE IF NOT EXISTS risk_scores (
     road_id BIGINT
 );
 
+-- Incidents table (multi-source: TomTom, news scraper, user reports)
+CREATE TABLE IF NOT EXISTS incidents (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    -- Location
+    latitude DOUBLE PRECISION NOT NULL,
+    longitude DOUBLE PRECISION NOT NULL,
+    location_name TEXT,
+    
+    -- Incident details
+    incident_type TEXT NOT NULL,
+    severity INTEGER CHECK (severity BETWEEN 1 AND 5),
+    description TEXT,
+    
+    -- Source tracking (CRITICAL for multi-source data)
+    source TEXT NOT NULL,  -- 'tomtom', 'news_scraper', 'user_report'
+    source_id TEXT,
+    
+    -- News-specific fields
+    news_url TEXT,
+    news_headline TEXT,
+    llm_confidence FLOAT,
+    
+    -- User report-specific fields
+    reported_by TEXT,  -- User identifier
+    photo_url TEXT,
+    
+    -- Verification
+    verified BOOLEAN DEFAULT FALSE,
+    verification_count INTEGER DEFAULT 0,
+    
+    -- Status
+    status TEXT DEFAULT 'active',
+    resolved_at TIMESTAMPTZ
+);
+
 -- Create indices for better query performance
 CREATE INDEX IF NOT EXISTS idx_traffic_location ON traffic_data(latitude, longitude);
 CREATE INDEX IF NOT EXISTS idx_traffic_timestamp ON traffic_data(timestamp);
@@ -419,6 +594,10 @@ CREATE INDEX IF NOT EXISTS idx_weather_timestamp ON weather_data(timestamp);
 CREATE INDEX IF NOT EXISTS idx_risk_location ON risk_scores(latitude, longitude);
 CREATE INDEX IF NOT EXISTS idx_risk_timestamp ON risk_scores(timestamp);
 CREATE INDEX IF NOT EXISTS idx_risk_score ON risk_scores(risk_score);
+CREATE INDEX IF NOT EXISTS idx_incidents_location ON incidents(latitude, longitude);
+CREATE INDEX IF NOT EXISTS idx_incidents_timestamp ON incidents(timestamp);
+CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
+CREATE INDEX IF NOT EXISTS idx_incidents_source ON incidents(source);
 
 -- Enable Row Level Security (optional, for multi-tenancy)
 -- ALTER TABLE traffic_data ENABLE ROW LEVEL SECURITY;

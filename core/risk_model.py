@@ -287,7 +287,8 @@ class RiskScorer:
             'closures': 0,
             'weather_hazards': 0,
             'traffic_jams': 0,
-            'vehicle_hazards': 0
+            'vehicle_hazards': 0,
+            'protests': 0  # New: protests from news/events
         }
         
         # Calculate distance for each incident type
@@ -390,6 +391,25 @@ class RiskScorer:
                             'severity': severity,
                             'risk_added': round(incident_risk, 3),
                             'description': incident.get('description', 'Vehicle Hazard')[:100]
+                        })
+                    
+                    elif category == 'protests':
+                        # Protests/rallies/events can cause significant traffic disruption
+                        incident_risk = 0.75 * severity_multiplier
+                        risk += incident_risk
+                        
+                        # Include source information for news incidents
+                        source = incident.get('source', 'unknown')
+                        source_label = '📰 News' if source == 'news_scraper' else '👥 User Report'
+                        
+                        factors.append({
+                            'type': 'protest',
+                            'distance_km': round(dist_km, 2),
+                            'severity': severity,
+                            'risk_added': round(incident_risk, 3),
+                            'description': incident.get('description', 'Protest/Rally')[:100],
+                            'source': source_label,
+                            'verified': incident.get('verified', False)
                         })
         
         # Clamp to 0-1
