@@ -22,6 +22,18 @@
         "EXPO_PUBLIC_API_URL": "$EXPO_PUBLIC_API_URL"
       }
     },
+    "local": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease"
+      },
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "$EXPO_PUBLIC_SUPABASE_URL",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "$EXPO_PUBLIC_SUPABASE_ANON_KEY",
+        "EXPO_PUBLIC_API_URL": "$EXPO_PUBLIC_API_URL"
+      }
+    },
     "production": {
       "android": {
         "buildType": "app-bundle"
