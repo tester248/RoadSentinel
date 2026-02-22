@@ -20,6 +20,7 @@ from core.road_network import RoadNetworkSampler
 from core.supabase_logger import SupabaseLogger
 from core.google_maps_client import GoogleMapsClient
 from core.incident_analytics import IncidentAnalytics
+from core.volunteer_analytics import VolunteerAnalytics
 from config import (
     PUNE_CENTER, PUNE_BBOX, TRAFFIC_SAMPLE_POINTS,
     CACHE_TTL, ROAD_SAMPLING, SUPABASE_LOGGING
@@ -1644,6 +1645,335 @@ def main():
                     )
         else:
             st.info("ℹ️ No raw incident data available. Only TomTom incidents are currently loaded.")
+        
+        st.markdown("---")
+    
+    # ========== VOLUNTEER ANALYTICS DASHBOARD ==========
+    if supabase_logger and supabase_logger.enabled:
+        st.markdown("### 👥 Volunteer Management Dashboard")
+        st.markdown("*Real-time insights on volunteer coordination and incident assignments*")
+        
+        try:
+            volunteer_analytics = VolunteerAnalytics(supabase_logger.client)
+            
+            # Get comprehensive analytics
+            incidents_summary = volunteer_analytics.get_incidents_summary()
+            skills_analysis = volunteer_analytics.get_skills_analysis()
+            engagement = volunteer_analytics.get_volunteer_engagement()
+            priority_dist = volunteer_analytics.get_priority_distribution()
+            
+            # ========== KEY METRICS ROW ==========
+            metrics_col1, metrics_col2, metrics_col3, metrics_col4, metrics_col5 = st.columns(5)
+            
+            with metrics_col1:
+                st.metric(
+                    "📋 Total Incidents",
+                    incidents_summary['total'],
+                    delta=f"{incidents_summary['unassigned']} unassigned",
+                    delta_color="inverse"
+                )
+            
+            with metrics_col2:
+                st.metric(
+                    "👥 Active Volunteers",
+                    engagement['active_volunteers'],
+                    delta=f"{engagement['inactive_volunteers']} available",
+                    delta_color="normal"
+                )
+            
+            with metrics_col3:
+                assignment_rate = 0
+                if incidents_summary['total'] > 0:
+                    assignment_rate = ((incidents_summary['fully_assigned'] + incidents_summary['partially_assigned']) / 
+                                     incidents_summary['total'] * 100)
+                st.metric(
+                    "✅ Assignment Rate",
+                    f"{assignment_rate:.1f}%",
+                    delta=f"{incidents_summary['fully_assigned']} fully assigned"
+                )
+            
+            with metrics_col4:
+                st.metric(
+                    "🎯 Skills Available",
+                    skills_analysis['total_unique_skills'],
+                    delta=f"{skills_analysis['total_users']} total users"
+                )
+            
+            with metrics_col5:
+                st.metric(
+                    "📊 Avg Assignments",
+                    f"{engagement['avg_assignments_per_volunteer']:.1f}",
+                    delta="per volunteer"
+                )
+            
+            st.markdown("---")
+            
+            # ========== VISUALIZATIONS ROW 1: STATUS & PRIORITY ==========
+            viz_row1_col1, viz_row1_col2 = st.columns(2)
+            
+            with viz_row1_col1:
+                # Incident Assignment Status Breakdown
+                st.markdown("#### 📊 Incident Assignment Status")
+                
+                status_data = pd.DataFrame([
+                    {"Status": "Unassigned", "Count": incidents_summary['unassigned'], "Color": "#EF5350"},
+                    {"Status": "Partially Assigned", "Count": incidents_summary['partially_assigned'], "Color": "#FFA726"},
+                    {"Status": "Fully Assigned", "Count": incidents_summary['fully_assigned'], "Color": "#66BB6A"}
+                ])
+                
+                if status_data['Count'].sum() > 0:
+                    fig_status = px.pie(
+                        status_data,
+                        values='Count',
+                        names='Status',
+                        color='Status',
+                        color_discrete_map={
+                            'Unassigned': '#EF5350',
+                            'Partially Assigned': '#FFA726',
+                            'Fully Assigned': '#66BB6A'
+                        },
+                        hole=0.4
+                    )
+                    fig_status.update_traces(textposition='inside', textinfo='percent+label')
+                    fig_status.update_layout(height=300, showlegend=True)
+                    st.plotly_chart(fig_status, use_container_width=True)
+                    
+                    # Status breakdown metrics
+                    st.caption(f"🔴 {incidents_summary['unassigned']} need volunteers | "
+                             f"🟡 {incidents_summary['partially_assigned']} partially staffed | "
+                             f"🟢 {incidents_summary['fully_assigned']} fully staffed")
+                else:
+                    st.info("No incident data available")
+            
+            with viz_row1_col2:
+                # Priority Distribution with Assignment Status
+                st.markdown("#### ⚠️ Priority vs Assignment Status")
+                
+                if priority_dist:
+                    priority_chart_data = []
+                    for priority in ['critical', 'high', 'medium', 'low']:
+                        if priority in priority_dist:
+                            p_data = priority_dist[priority]
+                            priority_chart_data.append({
+                                'Priority': priority.upper(),
+                                'Unassigned': p_data['unassigned'],
+                                'Partially Assigned': p_data['partially_assigned'],
+                                'Fully Assigned': p_data['fully_assigned']
+                            })
+                    
+                    if priority_chart_data:
+                        df_priority = pd.DataFrame(priority_chart_data)
+                        
+                        fig_priority = px.bar(
+                            df_priority,
+                            x='Priority',
+                            y=['Unassigned', 'Partially Assigned', 'Fully Assigned'],
+                            title='',
+                            color_discrete_map={
+                                'Unassigned': '#EF5350',
+                                'Partially Assigned': '#FFA726',
+                                'Fully Assigned': '#66BB6A'
+                            },
+                            barmode='stack'
+                        )
+                        fig_priority.update_layout(height=300, xaxis_title="Priority Level", yaxis_title="Number of Incidents")
+                        st.plotly_chart(fig_priority, use_container_width=True)
+                        
+                        # Critical incidents warning
+                        critical_unassigned = priority_dist.get('critical', {}).get('unassigned', 0)
+                        if critical_unassigned > 0:
+                            st.warning(f"⚠️ **{critical_unassigned} CRITICAL incidents need immediate volunteer assignment!**")
+                    else:
+                        st.info("No priority data available")
+                else:
+                    st.info("No priority distribution available")
+            
+            st.markdown("---")
+            
+            # ========== VISUALIZATIONS ROW 2: SKILLS ANALYSIS ==========
+            st.markdown("#### 🎯 Skills Gap Analysis")
+            st.markdown("*Comparing required skills for open incidents vs available volunteer skills*")
+            
+            if skills_analysis['skills_gap']:
+                skills_col1, skills_col2 = st.columns(2)
+                
+                with skills_col1:
+                    # Skills demand (for unassigned/partial incidents)
+                    st.markdown("**📊 Most Needed Skills**")
+                    if skills_analysis['most_needed_skills']:
+                        needed_df = pd.DataFrame(
+                            skills_analysis['most_needed_skills'],
+                            columns=['Skill', 'Incidents Requiring']
+                        )
+                        
+                        fig_needed = px.bar(
+                            needed_df.head(10),
+                            x='Incidents Requiring',
+                            y='Skill',
+                            orientation='h',
+                            color='Incidents Requiring',
+                            color_continuous_scale='Reds'
+                        )
+                        fig_needed.update_layout(height=350, showlegend=False)
+                        st.plotly_chart(fig_needed, use_container_width=True)
+                    else:
+                        st.info("All incidents assigned or no skill requirements")
+                
+                with skills_col2:
+                    # Skills availability
+                    st.markdown("**👥 Available Volunteer Skills**")
+                    if skills_analysis['most_available_skills']:
+                        available_df = pd.DataFrame(
+                            skills_analysis['most_available_skills'],
+                            columns=['Skill', 'Volunteers With Skill']
+                        )
+                        
+                        fig_available = px.bar(
+                            available_df.head(10),
+                            x='Volunteers With Skill',
+                            y='Skill',
+                            orientation='h',
+                            color='Volunteers With Skill',
+                            color_continuous_scale='Greens'
+                        )
+                        fig_available.update_layout(height=350, showlegend=False)
+                        st.plotly_chart(fig_available, use_container_width=True)
+                    else:
+                        st.info("No user skill data available")
+                
+                # Skills gap table
+                st.markdown("**🔍 Detailed Skills Gap Analysis**")
+                
+                skills_gap_list = []
+                for skill, data in skills_analysis['skills_gap'].items():
+                    gap_status = "🔴 SHORTAGE" if data['gap'] > 0 else "🟢 SURPLUS"
+                    skills_gap_list.append({
+                        'Skill': skill,
+                        'Required': data['required'],
+                        'Available': data['available'],
+                        'Gap': abs(data['gap']),
+                        'Status': gap_status
+                    })
+                
+                skills_gap_df = pd.DataFrame(skills_gap_list)
+                skills_gap_df = skills_gap_df.sort_values('Gap', ascending=False)
+                
+                st.dataframe(
+                    skills_gap_df.head(15),
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Highlight critical gaps
+                critical_gaps = skills_gap_df[skills_gap_df['Status'] == '🔴 SHORTAGE'].head(3)
+                if not critical_gaps.empty:
+                    st.error(f"⚠️ **Critical Skill Shortages:** {', '.join(critical_gaps['Skill'].tolist())}")
+            else:
+                st.info("ℹ️ No skills data available. Ensure incidents table has `required_skills` and users table has `skills` columns.")
+            
+            st.markdown("---")
+            
+            # ========== VOLUNTEER ENGAGEMENT & RECOMMENDATIONS ==========
+            engagement_col1, engagement_col2 = st.columns(2)
+            
+            with engagement_col1:
+                st.markdown("#### 🏆 Top Volunteers")
+                st.markdown("*Most active volunteers by incident assignments*")
+                
+                if engagement['top_volunteers']:
+                    top_vol_data = []
+                    for vol_id, count in engagement['top_volunteers'][:10]:
+                        top_vol_data.append({
+                            'Volunteer ID': str(vol_id)[:8] + '...',
+                            'Assignments': count,
+                            '⭐': '⭐' * min(count, 5)
+                        })
+                    
+                    top_vol_df = pd.DataFrame(top_vol_data)
+                    st.dataframe(top_vol_df, use_container_width=True, hide_index=True)
+                    
+                    st.caption(f"💡 Average: {engagement['avg_assignments_per_volunteer']:.1f} assignments per volunteer")
+                else:
+                    st.info("No volunteer assignment history available")
+            
+            with engagement_col2:
+                st.markdown("#### 🎯 Smart Skill Matching")
+                st.markdown("*AI-powered volunteer recommendations*")
+                
+                recommendations = volunteer_analytics.get_skill_matching_recommendations(max_recommendations=5)
+                
+                if recommendations:
+                    for i, rec in enumerate(recommendations[:5], 1):
+                        priority_icon = {'critical': '🔴', 'high': '🟠', 'medium': '🟡', 'low': '🟢'}.get(rec['priority'], '⚪')
+                        
+                        with st.expander(f"{priority_icon} {rec['priority'].upper()}: {rec['incident_title'][:50]}...", expanded=(i==1)):
+                            st.write(f"**Required Skills:** {', '.join(rec['required_skills'])}")
+                            st.write(f"**Best Match:** {rec['best_match_percentage']:.0f}%")
+                            
+                            st.markdown("**👥 Recommended Volunteers:**")
+                            for vol in rec['matching_volunteers'][:3]:
+                                st.write(f"  • **{vol['user_name']}** ({vol['match_percentage']:.0f}% match)")
+                                st.caption(f"    Skills: {', '.join(vol['matching_skills'])}")
+                    
+                    st.success(f"✅ {len(recommendations)} incidents have matching volunteers available")
+                else:
+                    st.info("ℹ️ No matching recommendations available. All incidents may be assigned or no skill data available.")
+            
+            st.markdown("---")
+            
+            # ========== DETAILED INCIDENT TABLE WITH VOLUNTEER INFO ==========
+            st.markdown("#### 📋 Incident Details with Volunteer Requirements")
+            
+            incidents_df = volunteer_analytics.get_incident_details_by_priority()
+            
+            if not incidents_df.empty:
+                # Add human-readable columns
+                display_df = incidents_df.copy()
+                
+                # Format columns for display
+                if 'required_skills' in display_df.columns:
+                    display_df['required_skills'] = display_df['required_skills'].apply(
+                        lambda x: ', '.join(x) if isinstance(x, list) and x else 'None'
+                    )
+                
+                if 'assigned_count' in display_df.columns:
+                    display_df['assigned_count'] = display_df['assigned_count'].fillna(0).astype(int)
+                
+                if 'estimated_volunteers' in display_df.columns:
+                    display_df['estimated_volunteers'] = display_df['estimated_volunteers'].fillna(0).astype(int)
+                
+                # Show priority filter
+                priority_filter = st.multiselect(
+                    "Filter by Priority",
+                    options=['critical', 'high', 'medium', 'low'],
+                    default=['critical', 'high'],
+                    key="vol_priority_filter"
+                )
+                
+                if priority_filter:
+                    display_df = display_df[display_df['priority'].isin(priority_filter)]
+                
+                st.dataframe(
+                    display_df[['title', 'priority', 'status', 'assigned_count', 'estimated_volunteers', 'required_skills']].head(20),
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Download button
+                csv = incidents_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Full Incident Report (CSV)",
+                    data=csv,
+                    file_name=f"volunteer_incidents_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    key="download_volunteer_report"
+                )
+            else:
+                st.info("ℹ️ No incident data available in database")
+        
+        except Exception as e:
+            st.error(f"⚠️ Failed to load volunteer analytics: {str(e)}")
+            st.caption("Make sure `users`, `skills`, and `incidents` tables exist in Supabase with correct schema.")
         
         st.markdown("---")
     
