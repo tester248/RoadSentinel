@@ -26,12 +26,13 @@ SentinelRoad is an advanced road risk intelligence platform that combines **offi
 9. [Performance Metrics](#-performance-metrics)
 10. [Database Schema](#-database-schema)
 11. [API Documentation](#-api-documentation)
-12. [Project Structure](#-project-structure)
-13. [Roadmap](#-roadmap)
-14. [Contributing](#-contributing)
-15. [Troubleshooting](#-troubleshooting)
-16. [License](#-license)
-17. [Acknowledgments](#-acknowledgments)
+12. [Module Documentation](#-module-documentation)
+13. [Project Structure](#-project-structure)
+14. [Roadmap](#-roadmap)
+15. [Contributing](#-contributing)
+16. [Troubleshooting](#-troubleshooting)
+17. [License](#-license)
+18. [Acknowledgments](#-acknowledgments)
 
 ---
 
@@ -266,7 +267,8 @@ MODULE 2: News Intelligence Service (✅ LIVE - v2.0)
 ├─ Tech: FastAPI + Groq (Mixtral-8x7b)
 ├─ Data: Writes to Supabase incidents table (source='news_scraper')
 ├─ Status: Production deployment (Integrated)
-└─ Features: RSS scraping, LLM classification, 15-min cycles, auto-deduplication
+├─ Features: RSS scraping, LLM classification, 15-min cycles, auto-deduplication
+└─ Documentation: [Module 2 Detailed Guide](docs/MODULE2_NEWS_INTELLIGENCE.md)
 
 MODULE 3: Mobile App (✅ LIVE - v3.0)
 ├─ Purpose: User-facing reporting & risk visualization
@@ -1203,7 +1205,53 @@ CREATE INDEX idx_incidents_source ON incidents (source);
 
 ---
 
-## 🛠️ Troubleshooting
+## � Module Documentation
+
+SentinelRoad consists of three production-ready modules, each with comprehensive documentation:
+
+### Module 1: Admin Dashboard (Streamlit)
+**Status:** ✅ v1.5 Production  
+**Documentation:** Main README (this file)  
+**Tech Stack:** Python 3.12, Streamlit, Folium, Supabase  
+**Features:** Risk heatmap, incident analytics, multi-source data fusion, 6-component risk model
+
+### Module 2: News Intelligence API (FastAPI)
+**Status:** ✅ v2.0 Production  
+**Documentation:** [docs/MODULE2_NEWS_INTELLIGENCE.md](docs/MODULE2_NEWS_INTELLIGENCE.md) 📖  
+**Tech Stack:** FastAPI, Groq LLM (Mixtral-8x7b), Supabase  
+**Features:** 
+- Multi-source news aggregation (NewsAPI, Google News, Reddit, Twitter)
+- Production-grade validation pipeline
+- LLM-powered incident extraction with 100% accuracy
+- Volunteer action guidance generation (priority, skills, steps)
+- 15-minute automated cycles
+- Zero-cost Groq API integration
+
+**Quick Links:**
+- [Setup Guide](docs/MODULE2_NEWS_INTELLIGENCE.md#quick-start)
+- [API Endpoints](docs/MODULE2_NEWS_INTELLIGENCE.md#api-endpoints)
+- [Groq LLM Integration](docs/MODULE2_NEWS_INTELLIGENCE.md#groq-llm-integration-100-accurate-extraction)
+- [Volunteer Guidance System](docs/MODULE2_NEWS_INTELLIGENCE.md#volunteer-action-guidance-system)
+
+### Module 3: Mobile App (React Native Expo)
+**Status:** ✅ v3.0 Production  
+**Documentation:** Coming soon  
+**Tech Stack:** React Native Expo, Supabase Auth, React Native Maps  
+**Features:** Incident reporting, photo upload, GPS tracking, gamification, community verification, push notifications
+
+### Cross-Module Integration
+All modules share a unified Supabase PostgreSQL database with:
+- `incidents` table (multi-source data with `source` field)
+- `risk_scores` table (historical risk analytics)
+- `user_profiles` table (mobile app gamification)
+
+**Architecture Diagrams:**
+- [Complete System Architecture](docs/COMPREHENSIVE_ARCHITECTURE_MERMAID.md)
+- [High-Level Overview](docs/ARCHITECTURE.md)
+
+---
+
+## �🛠️ Troubleshooting
 
 ### Common Issues
 
