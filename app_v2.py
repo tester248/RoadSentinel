@@ -453,15 +453,175 @@ def load_recent_risk_scores_from_supabase(supabase_logger, hours_back=168):
         return None
 
 
+def _calculate_single_location_risk(traffic_result, weather_data, osm_features, scorer,
+                                     all_pois=None, incident_data=None,
+                                     google_maps_client=None, use_google_maps=False):
+    """Calculate risk for a single location (used for parallel processing)."""
+    location = traffic_result['location']
+    traffic_data = traffic_result['data']
+    road_info = traffic_result.get('road_info', {})
+    
+    # Calculate POI risk (Google Maps or OSM)
+    poi_data = None
+    
+    if use_google_maps and google_maps_client and google_maps_client.enabled:
+        # Use Google Maps enhanced POI risk
+        try:
+            current_speed = traffic_data.get('flowSegmentData', {}).get('currentSpeed', 0) if traffic_data else 0
+            poi_risk, poi_details = google_maps_client.calculate_poi_risk_enhanced(
+                location[0], location[1], radius=500
+            )
+            poi_data = poi_details
+            poi_data['poi_risk_score'] = poi_risk
+        except Exception as e:
+            logger.error(f"Failed to calculate Google Maps POI risk: {e}")
+    elif all_pois:
+        # Use OSM POI risk (existing logic)
+        try:
+            from core.api_clients import OSMClient
+            nearby_pois = OSMClient.filter_pois_by_distance(
+                all_pois, 
+                location[0], 
+                location[1], 
+                radius=500
+            )
+            
+            # Calculate POI risk using same logic as before
+            poi_risk = 0.0
+            poi_details = {
+                'schools_count': len(nearby_pois['schools']),
+                'hospitals_count': len(nearby_pois['hospitals']),
+                'bars_count': len(nearby_pois['bars']),
+                'bus_stops_count': len(nearby_pois['bus_stops']),
+                'factors': []
+            }
+            
+            # Schools increase risk
+            if nearby_pois['schools']:
+                school_risk = min(0.4, len(nearby_pois['schools']) * 0.15)
+                poi_risk += school_risk
+                poi_details['factors'].append({
+                    'type': 'schools',
+                    'count': len(nearby_pois['schools']),
+                    'risk_added': school_risk
+                })
+            
+            # Bars increase risk (DUI)
+            if nearby_pois['bars']:
+                bar_risk = min(0.5, len(nearby_pois['bars']) * 0.20)
+                poi_risk += bar_risk
+                poi_details['factors'].append({
+                    'type': 'bars',
+                    'count': len(nearby_pois['bars']),
+                    'risk_added': bar_risk
+                })
+            
+            # Bus stops increase risk (congestion)
+            if nearby_pois['bus_stops']:
+                bus_risk = min(0.3, len(nearby_pois['bus_stops']) * 0.10)
+                poi_risk += bus_risk
+                poi_details['factors'].append({
+                    'type': 'bus_stops',
+                    'count': len(nearby_pois['bus_stops']),
+                    'risk_added': bus_risk
+                })
+            
+            # Hospitals reduce risk (emergency response)
+            if nearby_pois['hospitals']:
+                hospital_benefit = min(0.2, len(nearby_pois['hospitals']) * 0.10)
+                poi_risk -= hospital_benefit
+                poi_details['factors'].append({
+                    'type': 'hospitals',
+                    'count': len(nearby_pois['hospitals']),
+                    'risk_added': -hospital_benefit
+                })
+            
+            poi_risk = max(0.0, min(1.0, poi_risk))  # Clamp 0-1
+            poi_details['poi_risk_score'] = poi_risk
+            poi_data = poi_details
+            
+        except Exception as e:
+            logger.error(f"Failed to calculate POI risk: {e}")
+    
+    # Calculate speeding risk if Google Maps is enabled OR TomTom speed limit available
+    speeding_data = None
+    current_speed = traffic_data.get('flowSegmentData', {}).get('currentSpeed', 0) if traffic_data else 0
+    
+    if use_google_maps and google_maps_client and google_maps_client.enabled:
+        # Try Google Maps speed limit first (most accurate)
+        try:
+            if current_speed > 0:  # Only check if we have speed data
+                speeding_risk, speeding_details = google_maps_client.calculate_speeding_risk(
+                    location[0], location[1], current_speed
+                )
+                speeding_data = speeding_details
+                speeding_data['speeding_risk_score'] = speeding_risk
+                speeding_data['source'] = 'Google Maps'
+        except Exception as e:
+            logger.error(f"Failed to calculate speeding risk with Google Maps: {e}")
+    
+    # Fallback to TomTom speed limit if available
+    if not speeding_data and current_speed > 0:
+        tomtom_speed_limit = road_info.get('speed_limit_kmh')
+        if tomtom_speed_limit:
+            try:
+                # Calculate speeding risk using TomTom data
+                if current_speed > tomtom_speed_limit:
+                    over_limit_ratio = (current_speed - tomtom_speed_limit) / tomtom_speed_limit
+                    
+                    if over_limit_ratio > 0.5:
+                        speeding_risk = 0.9  # Critical - 50%+ over limit
+                    elif over_limit_ratio > 0.3:
+                        speeding_risk = 0.7  # High - 30-50% over
+                    elif over_limit_ratio > 0.1:
+                        speeding_risk = 0.4  # Medium - 10-30% over
+                    else:
+                        speeding_risk = 0.2  # Low - slightly over
+                else:
+                    speeding_risk = 0.0  # Within speed limit
+                
+                speeding_data = {
+                    'speeding_risk_score': speeding_risk,
+                    'current_speed': current_speed,
+                    'speed_limit': tomtom_speed_limit,
+                    'over_limit_ratio': (current_speed - tomtom_speed_limit) / tomtom_speed_limit if current_speed > tomtom_speed_limit else 0,
+                    'source': 'TomTom',
+                    'message': f'Speed: {current_speed} km/h, Limit: {tomtom_speed_limit} km/h'
+                }
+            except Exception as e:
+                logger.error(f"Failed to calculate speeding risk with TomTom data: {e}")
+    
+    risk_result = scorer.calculate_risk_score(
+        location,
+        traffic_data,
+        weather_data,
+        osm_features,
+        poi_data=poi_data,
+        incident_data=incident_data,
+        speeding_data=speeding_data
+    )
+    
+    # Add road metadata to risk result
+    risk_result['road_name'] = road_info.get('road_name', 'Unknown')
+    risk_result['highway_type'] = road_info.get('highway_type', 'unknown')
+    
+    return risk_result, road_info
+
+
 def calculate_risk_scores(traffic_results, weather_data, osm_features, scorer, 
                           all_pois=None, incident_data=None, supabase_logger=None,
                           google_maps_client=None, use_google_maps=False):
     """Calculate risk scores for all locations with POI and incident data, then log to Supabase.
     
+    Uses parallel processing to speed up calculations significantly.
+    
     Args:
         google_maps_client: GoogleMapsClient instance (optional)
         use_google_maps: If True, use Google Maps for POI risk and add speeding risk
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+    
     risk_scores = []
     road_info_map = {}
     
@@ -470,163 +630,59 @@ def calculate_risk_scores(traffic_results, weather_data, osm_features, scorer,
     status_text = st.empty()
     
     total = len(traffic_results)
+    completed = 0
+    lock = threading.Lock()
     
-    for idx, traffic_result in enumerate(traffic_results):
-        location = traffic_result['location']
-        traffic_data = traffic_result['data']
-        road_info = traffic_result.get('road_info', {})
+    # Determine optimal number of workers (max 20 to avoid rate limits)
+    max_workers = min(20, max(4, total // 10))
+    
+    status_text.text(f"⚡ Processing {total} locations with {max_workers} parallel workers...")
+    
+    # Use ThreadPoolExecutor for parallel processing
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_idx = {
+            executor.submit(
+                _calculate_single_location_risk,
+                traffic_result, weather_data, osm_features, scorer,
+                all_pois, incident_data, google_maps_client, use_google_maps
+            ): idx
+            for idx, traffic_result in enumerate(traffic_results)
+        }
         
-        # Update progress
-        progress = (idx + 1) / total
-        progress_bar.progress(progress)
-        status_text.text(f"Calculating risks... {idx + 1}/{total}")
+        # Collect results as they complete
+        results = [None] * total  # Pre-allocate to maintain order
         
-        # Calculate POI risk (Google Maps or OSM)
-        poi_data = None
-        
-        if use_google_maps and google_maps_client and google_maps_client.enabled:
-            # Use Google Maps enhanced POI risk
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
             try:
-                current_speed = traffic_data.get('flowSegmentData', {}).get('currentSpeed', 0) if traffic_data else 0
-                poi_risk, poi_details = google_maps_client.calculate_poi_risk_enhanced(
-                    location[0], location[1], radius=500
-                )
-                poi_data = poi_details
-                poi_data['poi_risk_score'] = poi_risk
-            except Exception as e:
-                logger.error(f"Failed to calculate Google Maps POI risk: {e}")
-        elif all_pois:
-            # Use OSM POI risk (existing logic)
-            try:
-                from core.api_clients import OSMClient
-                nearby_pois = OSMClient.filter_pois_by_distance(
-                    all_pois, 
-                    location[0], 
-                    location[1], 
-                    radius=500
-                )
+                risk_result, road_info = future.result()
+                results[idx] = (risk_result, road_info)
                 
-                # Calculate POI risk using same logic as before
-                poi_risk = 0.0
-                poi_details = {
-                    'schools_count': len(nearby_pois['schools']),
-                    'hospitals_count': len(nearby_pois['hospitals']),
-                    'bars_count': len(nearby_pois['bars']),
-                    'bus_stops_count': len(nearby_pois['bus_stops']),
-                    'factors': []
-                }
-                
-                # Schools increase risk
-                if nearby_pois['schools']:
-                    school_risk = min(0.4, len(nearby_pois['schools']) * 0.15)
-                    poi_risk += school_risk
-                    poi_details['factors'].append({
-                        'type': 'schools',
-                        'count': len(nearby_pois['schools']),
-                        'risk_added': school_risk
-                    })
-                
-                # Bars increase risk (DUI)
-                if nearby_pois['bars']:
-                    bar_risk = min(0.5, len(nearby_pois['bars']) * 0.20)
-                    poi_risk += bar_risk
-                    poi_details['factors'].append({
-                        'type': 'bars',
-                        'count': len(nearby_pois['bars']),
-                        'risk_added': bar_risk
-                    })
-                
-                # Bus stops increase risk (congestion)
-                if nearby_pois['bus_stops']:
-                    bus_risk = min(0.3, len(nearby_pois['bus_stops']) * 0.10)
-                    poi_risk += bus_risk
-                    poi_details['factors'].append({
-                        'type': 'bus_stops',
-                        'count': len(nearby_pois['bus_stops']),
-                        'risk_added': bus_risk
-                    })
-                
-                # Hospitals reduce risk (emergency response)
-                if nearby_pois['hospitals']:
-                    hospital_benefit = min(0.2, len(nearby_pois['hospitals']) * 0.10)
-                    poi_risk -= hospital_benefit
-                    poi_details['factors'].append({
-                        'type': 'hospitals',
-                        'count': len(nearby_pois['hospitals']),
-                        'risk_added': -hospital_benefit
-                    })
-                
-                poi_risk = max(0.0, min(1.0, poi_risk))  # Clamp 0-1
-                poi_details['poi_risk_score'] = poi_risk
-                poi_data = poi_details
-                
-            except Exception as e:
-                logger.error(f"Failed to calculate POI risk: {e}")
-        
-        # Calculate speeding risk if Google Maps is enabled OR TomTom speed limit available
-        speeding_data = None
-        current_speed = traffic_data.get('flowSegmentData', {}).get('currentSpeed', 0) if traffic_data else 0
-        
-        if use_google_maps and google_maps_client and google_maps_client.enabled:
-            # Try Google Maps speed limit first (most accurate)
-            try:
-                if current_speed > 0:  # Only check if we have speed data
-                    speeding_risk, speeding_details = google_maps_client.calculate_speeding_risk(
-                        location[0], location[1], current_speed
-                    )
-                    speeding_data = speeding_details
-                    speeding_data['speeding_risk_score'] = speeding_risk
-                    speeding_data['source'] = 'Google Maps'
-            except Exception as e:
-                logger.error(f"Failed to calculate speeding risk with Google Maps: {e}")
-        
-        # Fallback to TomTom speed limit if available
-        if not speeding_data and current_speed > 0:
-            tomtom_speed_limit = road_info.get('speed_limit_kmh')
-            if tomtom_speed_limit:
-                try:
-                    # Calculate speeding risk using TomTom data
-                    if current_speed > tomtom_speed_limit:
-                        over_limit_ratio = (current_speed - tomtom_speed_limit) / tomtom_speed_limit
-                        
-                        if over_limit_ratio > 0.5:
-                            speeding_risk = 0.9  # Critical - 50%+ over limit
-                        elif over_limit_ratio > 0.3:
-                            speeding_risk = 0.7  # High - 30-50% over
-                        elif over_limit_ratio > 0.1:
-                            speeding_risk = 0.4  # Medium - 10-30% over
-                        else:
-                            speeding_risk = 0.2  # Low - slightly over
-                    else:
-                        speeding_risk = 0.0  # Within speed limit
+                # Update progress safely
+                with lock:
+                    completed += 1
+                    progress = completed / total
+                    progress_bar.progress(progress)
+                    status_text.text(f"⚡ Calculating risks... {completed}/{total} ({max_workers} workers)")
                     
-                    speeding_data = {
-                        'speeding_risk_score': speeding_risk,
-                        'current_speed': current_speed,
-                        'speed_limit': tomtom_speed_limit,
-                        'over_limit_ratio': (current_speed - tomtom_speed_limit) / tomtom_speed_limit if current_speed > tomtom_speed_limit else 0,
-                        'source': 'TomTom',
-                        'message': f'Speed: {current_speed} km/h, Limit: {tomtom_speed_limit} km/h'
-                    }
-                except Exception as e:
-                    logger.error(f"Failed to calculate speeding risk with TomTom data: {e}")
+            except Exception as e:
+                logger.error(f"Failed to calculate risk for location {idx}: {e}")
+                # Create a placeholder for failed results
+                location = traffic_results[idx]['location']
+                results[idx] = ({
+                    'location': {'lat': location[0], 'lon': location[1]},
+                    'risk_score': 0,
+                    'risk_level': 'unknown',
+                    'error': str(e)
+                }, {})
         
-        risk_result = scorer.calculate_risk_score(
-            location,
-            traffic_data,
-            weather_data,
-            osm_features,
-            poi_data=poi_data,
-            incident_data=incident_data,
-            speeding_data=speeding_data
-        )
-        
-        # Add road metadata to risk result
-        risk_result['road_name'] = road_info.get('road_name', 'Unknown')
-        risk_result['highway_type'] = road_info.get('highway_type', 'unknown')
-        
-        risk_scores.append(risk_result)
-        road_info_map[(location[0], location[1])] = road_info
+        # Extract results in original order
+        for risk_result, road_info in results:
+            if risk_result:
+                risk_scores.append(risk_result)
+                loc_tuple = (risk_result['location']['lat'], risk_result['location']['lon'])
+                road_info_map[loc_tuple] = road_info
     
     progress_bar.empty()
     status_text.empty()
