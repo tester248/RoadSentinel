@@ -479,10 +479,15 @@ class SupabaseLogger:
         for incident in incidents:
             incident_type = incident.get('reason', 'unknown').lower()
             
-            # Determine actual source (mobile_upload vs news URL)
+            # Determine actual source (mobile_upload vs news sources)
             raw_source = incident.get('source', 'unknown')
             is_mobile = raw_source == 'mobile_upload'
-            is_news = raw_source.startswith('http') if isinstance(raw_source, str) else False
+            # News sources include: URLs, google_news, news_scraper, or any news site
+            is_news = (
+                (isinstance(raw_source, str) and raw_source.startswith('http')) or
+                raw_source in ['google_news', 'news_scraper'] or
+                (isinstance(raw_source, str) and 'news' in raw_source.lower())
+            )
             
             # Map incident to TomTom-compatible format
             incident_info = {

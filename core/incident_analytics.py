@@ -43,7 +43,8 @@ class IncidentAnalytics:
                 elif source == 'tomtom':
                     stats['official_count'] += 1
                     stats['by_source']['TomTom Official'] = stats['by_source'].get('TomTom Official', 0) + 1
-                elif source.startswith('http'):
+                elif source == 'news_scraper' or (isinstance(source, str) and source.startswith('http')):
+                    # Recognize news_scraper as well as URL-based sources
                     stats['news_count'] += 1
                     stats['by_source']['News Sources'] = stats['by_source'].get('News Sources', 0) + 1
                 else:
