@@ -286,12 +286,12 @@ class SupabaseLogger:
             logger.error(f"Failed to retrieve historical risks: {e}")
             return []
     
-    def get_recent_risk_scores(self, hours_back: int = 24, limit: int = 200) -> List[Dict]:
+    def get_recent_risk_scores(self, hours_back: int = 168, limit: int = 200) -> List[Dict]:
         """
         Get most recent risk scores from the database (for displaying cached data).
         
         Args:
-            hours_back: How many hours of recent data to retrieve
+            hours_back: How many hours of recent data to retrieve (default: 7 days)
             limit: Maximum number of records to return
             
         Returns:

@@ -376,13 +376,13 @@ def fetch_incident_data(tomtom_client, bbox, supabase_logger=None):
     return merged_incidents, total
 
 
-def load_recent_risk_scores_from_supabase(supabase_logger, hours_back=24):
+def load_recent_risk_scores_from_supabase(supabase_logger, hours_back=168):
     """
     Load recent risk scores from Supabase to avoid API calls.
     
     Args:
         supabase_logger: SupabaseLogger instance
-        hours_back: How many hours back to retrieve data
+        hours_back: How many hours back to retrieve data (default: 7 days)
         
     Returns:
         List of risk score dictionaries in app format, or None if unavailable
@@ -1157,12 +1157,12 @@ def main():
     else:
         # First load - try Supabase historical data first
         st.info("📚 Loading recent data from database...")
-        historical_scores = load_recent_risk_scores_from_supabase(supabase_logger, hours_back=24)
+        historical_scores = load_recent_risk_scores_from_supabase(supabase_logger, hours_back=168)
         
         if historical_scores and len(historical_scores) > 0:
             # Found recent data in Supabase
             st.session_state.risk_scores = historical_scores
-            st.session_state.last_update = "Historical (24h)"
+            st.session_state.last_update = "Historical (7d)"
             risk_scores = historical_scores
             st.success(f"✅ Loaded {len(historical_scores)} recent risk scores from database (past 24h). Click '🔄 Refresh Data' for fresh API data.")
             fetch_fresh = False
