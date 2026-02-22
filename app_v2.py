@@ -319,7 +319,7 @@ def fetch_incident_data(tomtom_client, bbox, supabase_logger=None):
         supabase_logger: SupabaseLogger instance for fetching news/user incidents
         
     Returns:
-        (merged_categorized_incidents, total_count)
+        (merged_categorized_incidents, total_count, raw_supabase_incidents)
     """
     merged_incidents = {
         'accidents': [],
@@ -334,6 +334,7 @@ def fetch_incident_data(tomtom_client, bbox, supabase_logger=None):
     
     tomtom_count = 0
     supabase_count = 0
+    raw_supabase_incidents = []  # Store raw incidents for deep dive
     
     # Fetch TomTom incidents (official API)
     try:
@@ -357,6 +358,7 @@ def fetch_incident_data(tomtom_client, bbox, supabase_logger=None):
         try:
             # Fetch incidents from last 7 days with automatic geocoding
             raw_incidents = supabase_logger.get_active_incidents(bbox=bbox, hours_back=168, auto_geocode=True)
+            raw_supabase_incidents = raw_incidents  # Store for deep dive
             categorized_supabase = supabase_logger.categorize_supabase_incidents(raw_incidents)
             
             # Merge with TomTom incidents
@@ -373,7 +375,7 @@ def fetch_incident_data(tomtom_client, bbox, supabase_logger=None):
     if tomtom_count > 0 or supabase_count > 0:
         logger.info(f"Incidents: {tomtom_count} from TomTom, {supabase_count} from Supabase/News (total: {total})")
     
-    return merged_incidents, total
+    return merged_incidents, total, raw_supabase_incidents
 
 
 def load_recent_risk_scores_from_supabase(supabase_logger, hours_back=168):
@@ -1170,10 +1172,11 @@ def main():
             PUNE_BBOX['max_lat'], PUNE_BBOX['max_lon'])
     
     with st.spinner("🚨 Fetching traffic incidents from multiple sources..."):
-        incident_data, incident_count = fetch_incident_data(tomtom_client, bbox, supabase_logger)
+        incident_data, incident_count, raw_incidents = fetch_incident_data(tomtom_client, bbox, supabase_logger)
         
         # Store in session state for analytics dashboard
         st.session_state.incident_data = incident_data
+        st.session_state.raw_incidents = raw_incidents  # Store raw incidents for deep dive
         
         if incident_data:
             # Show incident summary
@@ -1430,6 +1433,217 @@ def main():
         # Incident heatmap data preparation
         heatmap_data = analytics.get_incident_heatmap_data(incident_data)
         st.session_state.incident_heatmap_data = heatmap_data
+        
+        # ========== INCIDENT DEEP DIVE SECTION ==========
+        st.markdown("---")
+        st.markdown("#### 🔍 Incident Deep Dive")
+        st.markdown("*Explore detailed incident information and patterns*")
+        
+        # Get raw incidents for detailed view
+        raw_incidents = st.session_state.get('raw_incidents', [])
+        
+        if raw_incidents:
+            # Create filter controls
+            filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+            
+            with filter_col1:
+                # Category filter
+                all_categories = ['All'] + sorted(list(set([inc.get('reason', 'unknown') for inc in raw_incidents])))
+                selected_category = st.selectbox("📂 Category", all_categories, key="incident_category_filter")
+            
+            with filter_col2:
+                # Priority filter
+                all_priorities = ['All', 'low', 'medium', 'high', 'critical']
+                selected_priority = st.selectbox("⚠️ Priority", all_priorities, key="incident_priority_filter")
+            
+            with filter_col3:
+                # Status filter
+                all_statuses = ['All'] + sorted(list(set([inc.get('status', 'unassigned') for inc in raw_incidents])))
+                selected_status = st.selectbox("📋 Status", all_statuses, key="incident_status_filter")
+            
+            with filter_col4:
+                # Source filter  
+                all_sources = ['All'] + sorted(list(set([inc.get('source', 'unknown') for inc in raw_incidents])))
+                selected_source = st.selectbox("📡 Source", all_sources, key="incident_source_filter")
+            
+            # Apply filters
+            filtered_incidents = raw_incidents
+            if selected_category != 'All':
+                filtered_incidents = [inc for inc in filtered_incidents if inc.get('reason') == selected_category]
+            if selected_priority != 'All':
+                filtered_incidents = [inc for inc in filtered_incidents if inc.get('priority') == selected_priority]
+            if selected_status != 'All':
+                filtered_incidents = [inc for inc in filtered_incidents if inc.get('status') == selected_status]
+            if selected_source != 'All':
+                filtered_incidents = [inc for inc in filtered_incidents if inc.get('source') == selected_source]
+            
+            st.info(f"📊 Showing {len(filtered_incidents)} of {len(raw_incidents)} incidents")
+            
+            # Search box
+            search_query = st.text_input("🔎 Search incidents", placeholder="Search by title, location, or description...", key="incident_search")
+            if search_query:
+                search_lower = search_query.lower()
+                filtered_incidents = [
+                    inc for inc in filtered_incidents
+                    if search_lower in inc.get('title', '').lower() or 
+                       search_lower in inc.get('location_text', '').lower() or
+                       search_lower in inc.get('summary', '').lower()
+                ]
+                st.info(f"🔍 Found {len(filtered_incidents)} matches for '{search_query}'")
+            
+            # Display options
+            display_col1, display_col2 = st.columns([3, 1])
+            with display_col1:
+                view_mode = st.radio("View Mode", ["Cards", "Table"], horizontal=True, key="incident_view_mode")
+            with display_col2:
+                items_per_page = st.selectbox("Per Page", [10, 25, 50, 100], index=1, key="incidents_per_page")
+            
+            # Pagination
+            total_incidents = len(filtered_incidents)
+            total_pages = max(1, (total_incidents + items_per_page - 1) // items_per_page)
+            
+            page_col1, page_col2, page_col3 = st.columns([1, 2, 1])
+            with page_col2:
+                current_page = st.number_input(
+                    f"Page (1-{total_pages})", 
+                    min_value=1, 
+                    max_value=total_pages, 
+                    value=1, 
+                    key="incident_page"
+                )
+            
+            # Get page items
+            start_idx = (current_page - 1) * items_per_page
+            end_idx = min(start_idx + items_per_page, total_incidents)
+            page_incidents = filtered_incidents[start_idx:end_idx]
+            
+            st.markdown(f"*Showing incidents {start_idx + 1}-{end_idx} of {total_incidents}*")
+            
+            if view_mode == "Cards":
+                # Card view - detailed expandable cards
+                for i, incident in enumerate(page_incidents, start=start_idx + 1):
+                    # Priority color
+                    priority_colors = {
+                        'low': '🟢',
+                        'medium': '🟡',
+                        'high': '🟠',
+                        'critical': '🔴'
+                    }
+                    priority_icon = priority_colors.get(incident.get('priority', 'medium'), '⚪')
+                    
+                    # Source icon
+                    source = incident.get('source', 'unknown')
+                    source_icon = '📱' if source == 'mobile_upload' else ('📰' if 'news' in source.lower() or source.startswith('http') else '⚡')
+                    
+                    # Create card title
+                    title = incident.get('title', 'Untitled Incident')[:80]
+                    reason = incident.get('reason', 'unknown').upper()
+                    
+                    with st.expander(f"{priority_icon} #{i} [{reason}] {title}", expanded=False):
+                        # Main info columns
+                        info_col1, info_col2 = st.columns(2)
+                        
+                        with info_col1:
+                            st.markdown("**📋 Details**")
+                            st.write(f"**ID:** `{incident.get('id', 'N/A')[:18]}...`")
+                            st.write(f"**Category:** {incident.get('reason', 'unknown')}")
+                            st.write(f"**Priority:** {priority_icon} {incident.get('priority', 'medium')}")
+                            st.write(f"**Status:** {incident.get('status', 'unassigned')}")
+                            st.write(f"**Source:** {source_icon} {source[:50]}")
+                            
+                            if incident.get('location_text'):
+                                st.write(f"**Location:** {incident.get('location_text')}")
+                            
+                            if incident.get('latitude') and incident.get('longitude'):
+                                st.write(f"**Coordinates:** [{incident.get('latitude'):.4f}, {incident.get('longitude'):.4f}]")
+                        
+                        with info_col2:
+                            st.markdown("**⏰ Timeline**")
+                            created = incident.get('created_at', 'N/A')
+                            occurred = incident.get('occurred_at', 'N/A')
+                            if created != 'N/A':
+                                st.write(f"**Reported:** {created[:19].replace('T', ' ')}")
+                            if occurred != 'N/A':
+                                st.write(f"**Occurred:** {occurred[:19].replace('T', ' ')}")
+                            
+                            st.markdown("**👥 Response Info**")
+                            if incident.get('estimated_volunteers'):
+                                st.write(f"**Volunteers Needed:** {incident.get('estimated_volunteers', 0)}")
+                            
+                            if incident.get('assigned_to'):
+                                st.write(f"**Assigned To:** {incident.get('assigned_to')}")
+                        
+                        # Description/Summary
+                        if incident.get('summary'):
+                            st.markdown("**📝 Summary**")
+                            st.write(incident.get('summary'))
+                        
+                        # Skills and Actions
+                        skills_actions_col1, skills_actions_col2 = st.columns(2)
+                        
+                        with skills_actions_col1:
+                            if incident.get('required_skills'):
+                                st.markdown("**🎯 Required Skills**")
+                                for skill in incident.get('required_skills', []):
+                                    st.write(f"  • {skill}")
+                        
+                        with skills_actions_col2:
+                            if incident.get('actions_needed'):
+                                st.markdown("**✅ Actions Needed**")
+                                for action in incident.get('actions_needed', []):
+                                    st.write(f"  • {action}")
+                        
+                        # Resolution steps
+                        if incident.get('resolution_steps'):
+                            st.markdown("**📋 Resolution Steps**")
+                            for step in incident.get('resolution_steps', []):
+                                st.write(f"  • {step}")
+                        
+                        # Photo if available
+                        if incident.get('photo_url'):
+                            st.markdown("**📷 Photo Evidence**")
+                            try:
+                                st.image(incident.get('photo_url'), width=400)
+                            except:
+                                st.write(f"[View Photo]({incident.get('photo_url')})")
+                        
+                        # Reporter ID if mobile upload
+                        if incident.get('reporter_id'):
+                            st.markdown(f"**👤 Reporter ID:** `{incident.get('reporter_id')}`")
+            
+            else:
+                # Table view - compact overview
+                table_data = []
+                for incident in page_incidents:
+                    priority_emoji = {'low': '🟢', 'medium': '🟡', 'high': '🟠', 'critical': '🔴'}.get(incident.get('priority', 'medium'), '⚪')
+                    source = incident.get('source', 'unknown')
+                    source_icon = '📱' if source == 'mobile_upload' else ('📰' if 'news' in source.lower() or source.startswith('http') else '⚡')
+                    
+                    table_data.append({
+                        'Priority': f"{priority_emoji}",
+                        'Category': incident.get('reason', 'unknown'),
+                        'Title': incident.get('title', 'Untitled')[:50],
+                        'Location': incident.get('location_text', 'N/A')[:30] if incident.get('location_text') else 'N/A',
+                        'Status': incident.get('status', 'unassigned'),
+                        'Source': f"{source_icon} {source[:20]}",
+                        'Volunteers': incident.get('estimated_volunteers', 0),
+                        'Created': incident.get('created_at', 'N/A')[:10]
+                    })
+                
+                df = pd.DataFrame(table_data)
+                st.dataframe(df, use_container_width=True, height=400)
+                
+                # Export button
+                if st.button("📥 Export to CSV", key="export_incidents"):
+                    csv = df.to_csv(index=False)
+                    st.download_button(
+                        label="⬇️ Download CSV",
+                        data=csv,
+                        file_name=f"incidents_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+        else:
+            st.info("ℹ️ No raw incident data available. Only TomTom incidents are currently loaded.")
         
         st.markdown("---")
     
