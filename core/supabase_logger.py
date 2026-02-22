@@ -321,13 +321,15 @@ class SupabaseLogger:
             logger.error(f"Failed to retrieve recent risk scores: {e}")
             return []
     
-    def get_active_incidents(self, bbox: tuple = None, hours_back: int = 72) -> List[Dict]:
+    def get_active_incidents(self, bbox: tuple = None, hours_back: int = 168, auto_geocode: bool = True) -> List[Dict]:
         """
         Fetch active incidents from Supabase incidents table (news + user reports).
+        Automatically geocodes incidents with NULL coordinates if auto_geocode=True.
         
         Args:
             bbox: Optional bounding box (min_lat, min_lon, max_lat, max_lon)
-            hours_back: Only get incidents from last N hours (default 72 for news incidents)
+            hours_back: Only get incidents from last N hours (default 168 = 7 days)
+            auto_geocode: If True, automatically geocode incidents with NULL coordinates
             
         Returns:
             List of incident records with all fields (filters out records without coordinates)
@@ -352,11 +354,75 @@ class SupabaseLogger:
             
             all_incidents = response.data if response.data else []
             
-            # Filter out incidents without coordinates (need geocoding)
-            incidents = [
+            # Separate incidents with and without coordinates
+            incidents_with_coords = [
                 inc for inc in all_incidents 
                 if inc.get('latitude') is not None and inc.get('longitude') is not None
             ]
+            
+            incidents_without_coords = [
+                inc for inc in all_incidents 
+                if inc.get('latitude') is None or inc.get('longitude') is None
+            ]
+            
+            # Auto-geocode incidents with NULL coordinates
+            if auto_geocode and incidents_without_coords:
+                logger.info(f"🌍 Auto-geocoding {len(incidents_without_coords)} incidents with NULL coordinates...")
+                
+                try:
+                    # Import geocoding service
+                    from core.geocoding import GeocodingService
+                    
+                    geocoder = GeocodingService()
+                    newly_geocoded = 0
+                    
+                    for incident in incidents_without_coords:
+                        location_text = incident.get('location_text', '')
+                        
+                        # Skip invalid location_text (URLs, empty, etc.)
+                        if not location_text or location_text.startswith('http'):
+                            continue
+                        
+                        # Try to geocode
+                        try:
+                            coords = geocoder.geocode_location(location_text, bias_pune=True)
+                            
+                            if coords and coords.get('latitude') and coords.get('longitude'):
+                                # Update database with coordinates
+                                update_data = {
+                                    'latitude': coords['latitude'],
+                                    'longitude': coords['longitude']
+                                }
+                                
+                                self.client.table('incidents')\
+                                    .update(update_data)\
+                                    .eq('id', incident['id'])\
+                                    .execute()
+                                
+                                # Update incident dict and add to geocoded list
+                                incident['latitude'] = coords['latitude']
+                                incident['longitude'] = coords['longitude']
+                                incidents_with_coords.append(incident)
+                                newly_geocoded += 1
+                                
+                                # Rate limiting
+                                import time
+                                time.sleep(0.2)
+                                
+                        except Exception as e:
+                            logger.debug(f"Failed to geocode incident {incident['id']}: {e}")
+                            continue
+                    
+                    if newly_geocoded > 0:
+                        logger.info(f"✅ Auto-geocoded {newly_geocoded} incidents successfully")
+                    
+                except ImportError:
+                    logger.warning("Geocoding service not available, skipping auto-geocoding")
+                except Exception as e:
+                    logger.warning(f"Auto-geocoding failed: {e}")
+            
+            # Use the updated list with newly geocoded incidents
+            incidents = incidents_with_coords
             
             # Apply bounding box filter if provided
             if bbox and incidents:
@@ -367,11 +433,11 @@ class SupabaseLogger:
                     and min_lon <= inc['longitude'] <= max_lon
                 ]
             
-            skipped = len(all_incidents) - len(incidents)
-            if skipped > 0:
-                logger.warning(f"Skipped {skipped} incidents without coordinates (need geocoding)")
+            still_without_coords = len(all_incidents) - len(incidents)
+            if still_without_coords > 0:
+                logger.info(f"ℹ️ {still_without_coords} incidents still without coordinates (invalid location_text or failed geocoding)")
             
-            logger.info(f"Retrieved {len(incidents)} geocoded incidents from Supabase (from {len(all_incidents)} total)")
+            logger.info(f"Retrieved {len(incidents)} incidents from Supabase (from {len(all_incidents)} total in last {hours_back}h)")
             return incidents
             
         except Exception as e:

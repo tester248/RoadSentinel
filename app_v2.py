@@ -355,7 +355,8 @@ def fetch_incident_data(tomtom_client, bbox, supabase_logger=None):
     # Fetch Supabase incidents (AI news + user reports)
     if supabase_logger and supabase_logger.enabled:
         try:
-            raw_incidents = supabase_logger.get_active_incidents(bbox=bbox, hours_back=24)
+            # Fetch incidents from last 7 days with automatic geocoding
+            raw_incidents = supabase_logger.get_active_incidents(bbox=bbox, hours_back=168, auto_geocode=True)
             categorized_supabase = supabase_logger.categorize_supabase_incidents(raw_incidents)
             
             # Merge with TomTom incidents
@@ -1108,6 +1109,41 @@ def main():
     # Initialize variables that may be used later
     incident_data = None
     
+    # ALWAYS fetch incident data (it's fast and needed for analytics)
+    bbox = (PUNE_BBOX['min_lat'], PUNE_BBOX['min_lon'],
+            PUNE_BBOX['max_lat'], PUNE_BBOX['max_lon'])
+    
+    with st.spinner("🚨 Fetching traffic incidents from multiple sources..."):
+        incident_data, incident_count = fetch_incident_data(tomtom_client, bbox, supabase_logger)
+        
+        # Store in session state for analytics dashboard
+        st.session_state.incident_data = incident_data
+        
+        if incident_data:
+            # Show incident summary
+            accidents = len(incident_data.get('accidents', []))
+            closures = len(incident_data.get('closures', []))
+            road_works = len(incident_data.get('road_works', []))
+            protests = len(incident_data.get('protests', []))
+            
+            # Count by source
+            tomtom_incidents = sum(1 for cat in incident_data.values() for inc in cat if inc.get('source') == 'tomtom')
+            news_incidents = sum(1 for cat in incident_data.values() for inc in cat if inc.get('source') == 'news_scraper')
+            mobile_incidents = sum(1 for cat in incident_data.values() for inc in cat if inc.get('source') == 'mobile_upload')
+            
+            summary_parts = [
+                f"⚡ {tomtom_incidents} TomTom" if tomtom_incidents > 0 else "",
+                f"📰 {news_incidents} News" if news_incidents > 0 else "",
+                f"📱 {mobile_incidents} Mobile App" if mobile_incidents > 0 else ""
+            ]
+            source_summary = " | ".join([s for s in summary_parts if s])
+            
+            st.success(f"✅ Incidents: {incident_count} total ({accidents} accidents, {closures} closures, {road_works} road works, {protests} protests)")
+            if source_summary:
+                st.info(f"📊 Sources: {source_summary}")
+        else:
+            st.info("ℹ️ No incidents found in area")
+    
     # Check if we should fetch fresh data or use cached/Supabase data
     if st.session_state.force_refresh:
         # Explicitly requested fresh data
@@ -1165,38 +1201,6 @@ def main():
             if osm_features:
                 total_features = sum(len(v) for v in osm_features.values())
                 st.success(f"✅ Infrastructure: {total_features} features ({osm_api_calls} new API calls)")
-            
-            # Incident data from multiple sources (TomTom API + Supabase news/user reports)
-            st.info("🚨 Fetching traffic incidents from multiple sources...")
-            incident_data, incident_count = fetch_incident_data(tomtom_client, bbox, supabase_logger)
-            
-            # Store incident_data in session state for analytics
-            st.session_state.incident_data = incident_data
-            
-            if incident_data:
-                # Show incident summary with source breakdown
-                accidents = len(incident_data.get('accidents', []))
-                closures = len(incident_data.get('closures', []))
-                road_works = len(incident_data.get('road_works', []))
-                protests = len(incident_data.get('protests', []))
-                
-                # Count by source (updated to include mobile_upload)
-                tomtom_incidents = sum(1 for cat in incident_data.values() for inc in cat if inc.get('source') == 'tomtom')
-                news_incidents = sum(1 for cat in incident_data.values() for inc in cat if inc.get('source') == 'news_scraper')
-                mobile_incidents = sum(1 for cat in incident_data.values() for inc in cat if inc.get('source') == 'mobile_upload')
-                
-                summary_parts = [
-                    f"⚡ {tomtom_incidents} TomTom" if tomtom_incidents > 0 else "",
-                    f"📰 {news_incidents} News" if news_incidents > 0 else "",
-                    f"📱 {mobile_incidents} Mobile App" if mobile_incidents > 0 else ""
-                ]
-                source_summary = " | ".join([s for s in summary_parts if s])
-                
-                st.success(f"✅ Incidents: {incident_count} total ({accidents} accidents, {closures} closures, {road_works} road works, {protests} protests)")
-                if source_summary:
-                    st.info(f"📊 Sources: {source_summary}")
-            else:
-                st.info("ℹ️ No incidents found in area")
             
             # POI data (batch fetch once for entire area)
             # Note: Google Maps POI fetching happens per-location in calculate_risk_scores
@@ -1485,14 +1489,11 @@ def main():
             # Sort and display
             top_roads = sorted(road_avg_risks.items(), key=lambda x: x[1], reverse=True)[:10]
             
-            import pandas as pd
             df_top_roads = pd.DataFrame(top_roads, columns=['Road Name', 'Avg Risk Score'])
             st.dataframe(df_top_roads, use_container_width=True)
     
     # Detailed data table
     with st.expander("📋 View All Risk Data"):
-        import pandas as pd
-        
         df_data = []
         for risk in risk_scores:
             row = {
