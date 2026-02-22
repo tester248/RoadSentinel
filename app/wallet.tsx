@@ -134,7 +134,7 @@ export default function WalletScreen() {
                 <View style={styles.balanceCard}>
                     <View style={styles.balanceTop}>
                         <Image
-                            source={require('@/assets/images/sentinel_coin.png')}
+                            source={require('@/assets/images/coin-icon.png')}
                             style={styles.coinImage}
                         />
                         <View style={styles.balanceInfo}>
