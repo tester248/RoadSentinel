@@ -1,4 +1,4 @@
-# 🚗 SentinelRoad
+# 🚗 RoadSentinel
 
 **Multi-Source Road Risk Intelligence System for Safer Indian Roads**
 
@@ -7,7 +7,7 @@
 [![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-3ECF8E.svg)](https://supabase.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-SentinelRoad is an advanced road risk intelligence platform that combines **official traffic APIs**, **AI-powered news scraping**, and **crowdsourced reports** to predict and prevent accidents. Fully deployed in Pune, India, the system identifies high-risk road locations in real-time using a sophisticated 6-component risk model with parallel processing, intelligent caching, and multi-source data fusion.
+RoadSentinel is an advanced road risk intelligence platform that combines **official traffic APIs**, **AI-powered news scraping**, and **crowdsourced reports** to predict and prevent accidents. Fully deployed in Pune, India, the system identifies high-risk road locations in real-time using a sophisticated 6-component risk model with parallel processing, intelligent caching, and multi-source data fusion.
 
 **🎯 Mission:** Reduce road accidents by 20% through predictive, data-driven risk intelligence.
 
@@ -38,9 +38,9 @@ SentinelRoad is an advanced road risk intelligence platform that combines **offi
 
 ## 🌟 Overview
 
-### What is SentinelRoad?
+### What is RoadSentinel?
 
-SentinelRoad is the first Indian road safety system that **combines multiple data sources with intelligent quality weighting** to provide real-time risk assessments. While existing solutions like Google Maps rely solely on official APIs (which update slowly), and apps like Waze depend only on crowdsourcing (which misses major events), SentinelRoad fuses all available data sources to achieve **50% better incident coverage** and **30% faster detection**.
+RoadSentinel is the first Indian road safety system that **combines multiple data sources with intelligent quality weighting** to provide real-time risk assessments. While existing solutions like Google Maps rely solely on official APIs (which update slowly), and apps like Waze depend only on crowdsourcing (which misses major events), RoadSentinel fuses all available data sources to achieve **50% better incident coverage** and **30% faster detection**.
 
 ### Problem Statement
 
@@ -213,7 +213,7 @@ graph TB
         Mobile["Mobile App<br/>(v3.0 LIVE)"]
     end
     
-    subgraph Core["⚙️ SentinelRoad Platform"]
+    subgraph Core["⚙️ RoadSentinel Platform"]
         RiskEngine["Risk Engine<br/>6-Component Model<br/>Parallel Processing"]
         IncidentFusion["Incident Fusion<br/>Multi-Source + LLM<br/>Auto-Geocoding"]
     end
@@ -252,7 +252,7 @@ graph TB
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    SENTINELROAD ECOSYSTEM                    │
+│                    ROADSENTINEL ECOSYSTEM                    │
 └─────────────────────────────────────────────────────────────┘
 
 MODULE 1: Admin Dashboard (✅ This Repo - LIVE)
@@ -305,8 +305,8 @@ SHARED: Supabase PostgreSQL Database
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/tester248/SentinelRoad.git
-cd SentinelRoad
+git clone https://github.com/tester248/RoadSentinel.git
+cd RoadSentinel
 
 # 2. Create virtual environment (recommended)
 python -m venv venv
@@ -359,8 +359,8 @@ brew install python@3.12
 
 **Step 2: Clone Repository**
 ```bash
-git clone https://github.com/tester248/SentinelRoad.git
-cd SentinelRoad
+git clone https://github.com/tester248/RoadSentinel.git
+cd RoadSentinel
 ```
 
 **Step 3: Setup Virtual Environment**
@@ -418,14 +418,14 @@ streamlit run app_v2.py --server.port 8502 --server.address 0.0.0.0
 
 ```bash
 # Build Docker image
-docker build -t sentinelroad:latest .
+docker build -t roadsentinel:latest .
 
 # Run container
 docker run -p 8502:8502 \
   -e TOMTOM_API_KEY=your_key \
   -e OPENWEATHER_API_KEY=your_key \
   -v $(pwd)/data:/app/data \
-  sentinelroad:latest
+  roadsentinel:latest
 ```
 
 ### Method 3: Docker Compose (Multi-Container)
@@ -434,7 +434,7 @@ docker run -p 8502:8502 \
 # docker-compose.yml
 version: '3.8'
 services:
-  sentinelroad:
+  roadsentinel:
     build: .
     ports:
       - "8502:8502"
@@ -706,7 +706,7 @@ Result: ~5-10 API calls per day vs. 200-300
 
 ### Model Overview
 
-SentinelRoad uses a **weighted multi-component risk model** that combines 6 independent risk factors. Each component is calculated on a 0-1 scale, then weighted and summed to produce a final risk score (0-100).
+RoadSentinel uses a **weighted multi-component risk model** that combines 6 independent risk factors. Each component is calculated on a 0-1 scale, then weighted and summed to produce a final risk score (0-100).
 
 ### Mathematical Formula
 
@@ -1207,7 +1207,7 @@ CREATE INDEX idx_incidents_source ON incidents (source);
 
 ## � Module Documentation
 
-SentinelRoad consists of three production-ready modules, each with comprehensive documentation:
+RoadSentinel consists of three production-ready modules, each with comprehensive documentation:
 
 ### Module 1: Admin Dashboard (Streamlit)
 **Status:** ✅ v1.5 Production  
@@ -1340,7 +1340,7 @@ git pull origin main
 
 MIT License
 
-Copyright (c) 2026 SentinelRoad Contributors
+Copyright (c) 2026 RoadSentinel Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -1404,20 +1404,20 @@ This project was inspired by the urgent need for data-driven road safety solutio
 
 ## 📞 Contact & Links
 
-- **GitHub Repository:** [github.com/tester248/SentinelRoad](https://github.com/tester248/SentinelRoad)
+- **GitHub Repository:** [github.com/tester248/RoadSentinel](https://github.com/tester248/RoadSentinel)
 - **Documentation:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - **Project Plan:** [PROJECT_BUILD_PLAN.md](PROJECT_BUILD_PLAN.md)
-- **Issues & Bugs:** [GitHub Issues](https://github.com/tester248/SentinelRoad/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/tester248/SentinelRoad/discussions)
+- **Issues & Bugs:** [GitHub Issues](https://github.com/tester248/RoadSentinel/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/tester248/RoadSentinel/discussions)
 
 ---
 
 ## 🌟 Star & Share
 
-If you find SentinelRoad useful, please:
+If you find RoadSentinel useful, please:
 
 ⭐ **Star this repository** on GitHub  
-🐦 **Share on social media** #SentinelRoad #RoadSafety  
+🐦 **Share on social media** #RoadSentinel #RoadSafety  
 💬 **Spread the word** in your community  
 🤝 **Contribute** to make Indian roads safer
 
