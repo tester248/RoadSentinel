@@ -1,4 +1,4 @@
-# SentinelRoad Backend Integration Guide
+# RoadSentinel Backend Integration Guide
 
 This guide explains how to integrate the React Native app with your FastAPI backend and Supabase.
 

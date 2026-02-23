@@ -202,7 +202,7 @@ EXPO_PUBLIC_API_URL=http://your-api-url:8000
 ### Manual Testing
 ```bash
 # Start the app
-cd SentinelRoad
+cd RoadSentinel
 npm start
 
 # Test on device (recommended for location)

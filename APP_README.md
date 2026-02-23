@@ -1,4 +1,4 @@
-# SentinelRoad - Community Incident Response Volunteer App
+# RoadSentinel - Community Incident Response Volunteer App
 
 A React Native Expo application that connects volunteers with local traffic incidents and emergencies that need assistance. Users can sign up, browse active incidents, and volunteer to help their community.
 
@@ -350,7 +350,7 @@ npm run reset-project  # Reset to default template
 
 ## License
 
-This project is part of the SentinelRoad initiative for community incident response.
+This project is part of the RoadSentinel initiative for community incident response.
 
 ## Support
 

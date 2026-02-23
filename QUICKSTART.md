@@ -1,4 +1,4 @@
-# SentinelRoad App - Quick Start Guide
+# RoadSentinel App - Quick Start Guide
 
 ## 🚀 Getting Started in 5 Minutes
 

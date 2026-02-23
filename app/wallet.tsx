@@ -62,12 +62,12 @@ export default function WalletScreen() {
         // Simulate a payment/transfer based on scanned data
         const amount = 15; // fixed mock amount
         if (balance < amount) {
-            Alert.alert("Insufficient Balance", "You don't have enough SentinelCoins.");
+            Alert.alert("Insufficient Balance", "You don't have enough RoadCoins.");
             return;
         }
 
         Alert.alert(
-            "Transfer SentinelCoins",
+            "Transfer RoadCoins",
             `Send ${amount} STC to Wallet:\n${data.substring(0, 12)}...?`,
             [
                 { text: "Cancel", style: "cancel" },
@@ -138,7 +138,7 @@ export default function WalletScreen() {
                             style={styles.coinImage}
                         />
                         <View style={styles.balanceInfo}>
-                            <Text style={styles.balanceLabel}>SentinelCoin Balance</Text>
+                            <Text style={styles.balanceLabel}>RoadCoin Balance</Text>
                             <View style={styles.balanceRow}>
                                 <Text style={styles.balanceAmount}>{balance}</Text>
                                 <Text style={styles.balanceCurrency}> STC</Text>

@@ -92,7 +92,7 @@ export default function HomeScreen() {
       {/* Top App Bar Overlay */}
       <View style={[styles.topOverlaySafeArea, { paddingTop: insets.top }]}>
         <View style={styles.appBar}>
-          <Text style={styles.appTitle}>Sentinel Road</Text>
+          <Text style={styles.appTitle}>Road Sentinel</Text>
         </View>
       </View>
 
