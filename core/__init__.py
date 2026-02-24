@@ -1,1 +1,1 @@
-"""Core modules for SentinelRoad risk assessment system."""
+"""Core modules for RoadSentinel risk assessment system."""

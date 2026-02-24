@@ -1,4 +1,4 @@
-"""SentinelRoad - Road Risk Visualization with Network Sampling and Historical Logging."""
+"""RoadSentinel - Road Risk Visualization with Network Sampling and Historical Logging."""
 
 import os
 import streamlit as st
@@ -38,7 +38,7 @@ load_dotenv()
 
 # Page configuration
 st.set_page_config(
-    page_title="SentinelRoad - Road Risk Identification",
+    page_title="RoadSentinel - Road Risk Identification",
     page_icon="🚨",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -1011,7 +1011,7 @@ def create_risk_map(risk_scores, risk_threshold, roads=None, incident_data=None)
 
 def main():
     """Main Streamlit application with road network sampling."""
-    st.title("🚨 SentinelRoad - Pune Road Risk Identification System")
+    st.title("🚨 RoadSentinel - Pune Road Risk Identification System")
     st.markdown("*Identifying high-risk road locations using road network analysis and real-time data*")
     
     # Initialize session state for tracking refresh
@@ -2131,7 +2131,7 @@ def main():
     st.markdown("---")
     st.markdown(f"""
     <div style='text-align: center; color: gray; font-size: 12px;'>
-        SentinelRoad v2.0 | Road Network Identification System | 
+        RoadSentinel v2.0 | Road Network Identification System | 
         Sampling: {sampling_method} ({len(sample_points)} points) |
         Historical Logging: {'Enabled' if supabase_logger and supabase_logger.enabled else 'Disabled'}
     </div>

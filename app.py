@@ -1,4 +1,4 @@
-"""SentinelRoad - Road Risk Visualization System for Pune."""
+"""RoadSentinel - Road Risk Visualization System for Pune."""
 
 import os
 import streamlit as st
@@ -30,7 +30,7 @@ load_dotenv()
 
 # Page configuration
 st.set_page_config(
-    page_title="SentinelRoad - Pune Risk Monitor",
+    page_title="RoadSentinel - Pune Risk Monitor",
     page_icon="🚨",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -255,7 +255,7 @@ def create_risk_map(risk_scores, risk_threshold):
 
 def main():
     """Main Streamlit application."""
-    st.title("🚨 SentinelRoad - Pune Road Risk Monitor")
+    st.title("🚨 RoadSentinel - Pune Road Risk Monitor")
     st.markdown("*Real-time road risk assessment using traffic flow, weather, and infrastructure data*")
     
     # Sidebar
@@ -396,7 +396,7 @@ def main():
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: gray; font-size: 12px;'>
-        SentinelRoad v1.0 | Powered by TomTom, OpenWeatherMap, and OpenStreetMap |
+        RoadSentinel v1.0 | Powered by TomTom, OpenWeatherMap, and OpenStreetMap |
         Risk Formula: α·Traffic + β·Weather + γ·Infrastructure
     </div>
     """, unsafe_allow_html=True)

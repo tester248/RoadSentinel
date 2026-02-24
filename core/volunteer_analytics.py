@@ -1,4 +1,4 @@
-"""Volunteer and incident management analytics for SentinelRoad."""
+"""Volunteer and incident management analytics for RoadSentinel."""
 
 import logging
 from typing import Dict, List, Optional, Tuple
